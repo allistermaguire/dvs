@@ -5,15 +5,20 @@ built on a **D1 Mini ESP32** and a **MAX3485** transceiver.
 
 It listens (receive-only) on the DVS bus *in parallel with the existing wall
 controller*, groups the serial bytes into frames, verifies the CRC and prints a
-decoded summary of every frame over USB. The goal is to work out the full command
-set so the controller can eventually be replaced - but for now the firmware never
-transmits, so it is safe to leave connected to a live, working system.
+decoded summary of every frame over USB. It can also **connect to Wi-Fi and MQTT**
+to expose the fan as a controllable device - turn it on/off and set the fan speed
+- while publishing the sniffed roof-space temperature and actual fan speed.
 
 Protocol work is based on Ian Rees' write-up,
 [*Reverse engineering the DVS bus*](https://ianrees.nz/tech/2018-07-11-reverse-engineering-the-dvs-bus.html).
 
-> **Status:** listen-only sniffer + decoder. Transmitting / controller replacement
-> is intentionally out of scope for now.
+> **Status:** listen-only sniffer + decoder, plus an **experimental control path**
+> (Wi-Fi + MQTT) that transmits on the bus to command power and fan speed.
+>
+> ⚠️ **Transmitting is active and shares the bus with the wall controller.** Frame
+> collisions are possible and the exact payloads for some registers (deadman, stop)
+> are still inferred, not confirmed. Only enable control on a system you can
+> recover, and keep the wall controller handy. The sniffer half remains passive.
 
 ## The DVS bus protocol
 
@@ -134,8 +139,10 @@ the live roof-vs-house temperature difference.
 
 ## Hardware & wiring
 
-Listen-only means the MAX3485 driver is permanently disabled and only the receiver
-is active (`DE` + `RE` tied together and held **LOW**).
+By default the firmware only receives: the MAX3485 driver stays disabled (`DE` +
+`RE` tied together and held **LOW**) and only the receiver is active. When the
+MQTT/console control path sends a command it briefly drives that same pin **HIGH**
+to transmit, then returns it LOW to keep listening.
 
 | MAX3485 | Board label | Connects to                                                     |
 | ------- | ----------- | --------------------------------------------------------------- |
@@ -165,13 +172,18 @@ Pin assignments live in [`include/config.h`](include/config.h).
 ```
 platformio.ini             PlatformIO envs: esp32dev (firmware) + native (tests)
 include/
-  config.h                 Pins, baud, gap threshold, register table
+  config.h                 Pins, baud, gap threshold, register + control table, MQTT topics
   crc16.h                  CRC16-CCITT API
-  frame.h                  Frame struct, CRC verify, decode + formatter
+  frame.h                  Frame struct, CRC verify, decode + formatter, frame builder
+  control.h                Fan control API (power / speed)
+  net.h                    Wi-Fi = MQTT bridge API
+  secrets.h                Wi-Fi / MQTT credentials (git-ignored; copy the .example)
+  secrets.h.example        Template for secrets.h
 src/
   crc16.cpp                CRC implementation (switchable variant)
-  frame.cpp                Frame decoding / line formatting
-  main.cpp                 Sniffer loop + USB command console (Arduino only)
+  frame.cpp                Frame decoding / line formatting / frame building
+  net.cpp                  Wi-Fi + MQTT client (esp32 only)
+  main.cpp                 Sniffer loop + USB console + RS485 transmit/control (Arduino only)
 test/
   test_crc/test_crc.cpp    Host-side unit tests (Unity)
 ```
@@ -184,6 +196,10 @@ authored without a local toolchain).
 ```sh
 # Run the host-side CRC / frame tests - no hardware needed
 pio test -e native
+
+# Provide Wi-Fi + MQTT credentials (git-ignored) before building the firmware
+cp include/secrets.h.example include/secrets.h
+# ...then edit include/secrets.h with your SSID, password and broker
 
 # Build and flash the firmware
 pio run
@@ -219,8 +235,89 @@ live data:
 | `crcrefl`     | Toggle CRC input/output reflection                              |
 | `crcend`      | Toggle transmitted CRC byte order (little/big endian)           |
 | `en [hi\|lo]`  | Set/toggle the transceiver `EN` (DE/RE) pin level              |
+| `tx [on\|off]` | Enable/disable transmit – `off` => listen-only, `on` => listen+send |
+| `on`          | Power the fan on (last used / default speed) – transmits        |
+| `off`         | Power the fan off (stop) – transmits                            |
+| `speed <n>`   | Set target fan speed `0..84` – transmits                        |
 | `status`      | Print the current configuration                                 |
 | `help`        | List commands                                                   |
+
+## Wi-Fi & MQTT control
+
+With `include/secrets.h` filled in, the firmware joins your Wi-Fi (station mode)
+and connects to an MQTT broker over **TLS** (Mosquitto with `require_certificate
+false`, so no client certificate is needed). It publishes fan state and sniffed
+sensor values, and subscribes to command topics so you can drive the fan (e.g.
+from Home Assistant). Credentials, broker and the TLS CA live in
+`include/secrets.h`; the topic tree and timing are in
+`include/config.h` (`include/config.h`).
+
+**TLS trust:** set `MQTT_CA_CERT` in `secrets.h` to the broker's CA certificate
+to verify the server. Left empty, the client uses `setInsecure()` – the link is
+still encrypted but the server is not authenticated (acceptable only on a trusted
+LAN). `MQTT_PORT` defaults to `8883` (the Mosquitto TLS port).
+
+**Listen vs. send:** the firmware boots in the mode set by
+`DVS_TX_ENABLED_DEFAULT` (listen-only by default). Flip it at runtime with the
+`tx` console command or the `dvs/tx/set` topic. In listen-only mode every control
+command is ignored and the bus is never driven – it is a pure sniffer.
+
+The base topic is `dvs`:
+
+| Topic | Dir | Payload | Meaning |
+| :--- | :--- | :--- | :--- |
+| `dvs/status` | out | `online`/`offline` | Availability (retained, MQTT LWT) |
+| `dvs/tx/set` | in | `ON`/`OFF` | Enable send (`ON`) or listen-only (`OFF`) |
+| `dvs/tx/state` | out | `ON`/`OFF` | Current transmit mode (retained) |
+| `dvs/power/set` | in | `ON`/`OFF` | Turn the fan on or off |
+| `dvs/power/state` | out | `ON`/`OFF` | Commanded power state (retained) |
+| `dvs/speed/set` | in | `0..84` | Set target fan speed |
+| `dvs/speed/state` | out | `0..84` | Commanded target speed (retained) |
+| `dvs/speed/actual` | out | `0..84` | Sniffed actual (ramping) speed |
+| `dvs/temperature` | out | e.g. `17.4` | Sniffed roof-space temperature (°C) |
+| `dvs/status/reg/NN` | out | hex bytes | Raw payload of status register `0xNN` (`01`, `06`, `12`, `13`) |
+
+State topics are (re)published immediately when a command is applied and again
+every `STATE_PUBLISH_MS` (default 15 s) so clients that reconnect between
+commands still see current values.
+
+### Home Assistant discovery
+
+On each MQTT connect the firmware publishes retained [MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery)
+configs, so Home Assistant auto-creates everything under a single **DVS G3**
+device – no YAML required:
+
+- a **fan** entity (on/off + speed as a percentage over the `1..84` range),
+- **sensors** for roof temperature and actual fan speed,
+- a **switch** for transmit mode (listen-only vs listen+send),
+- **diagnostic sensors** for each status-block register (`0x01/0x06/0x12/0x13`).
+
+Availability follows the `dvs/status` LWT, so entities show *unavailable* when the
+device drops off. Configuration lives in [`include/config.h`](include/config.h):
+set `HA_DISCOVERY_ENABLED` to `false` to disable it, change `HA_DISCOVERY_PREFIX`
+if your HA uses a non-default discovery prefix, or edit `HA_DEVICE_NAME`. The
+PubSubClient buffer is raised to 768 bytes in `netSetup()` because the discovery
+JSON exceeds the 256-byte default.
+
+How control maps onto the bus:
+
+- **Speed** → write register `0x15` (1-byte payload) to the fan address (`0x02`).
+- **Power off** → write register `0x15` with `0`. Live captures show the wall
+  controller has **no separate stop register** (`0x05`) – "off" is just speed 0,
+  and the fan ramps down on its own.
+- **Power on** → re-send the last non-zero speed (or `DVS_DEFAULT_SPEED`).
+- **Keep-alive** → while the fan is on, the current speed target (`0x15`) is
+  re-sent every `DVS_KEEPALIVE_INTERVAL_MS` (~250 ms, matching the controller).
+  There is **no `0x03` deadman** on this bus – re-writing `0x15` is the keepalive.
+
+The same actions are available over USB via the `on`, `off` and `speed <n>`
+console commands, which is the easiest way to test the transmit path before
+wiring up MQTT.
+
+> Confirmed by capture: on/off/speed all go through register `0x15`; there is no
+> `0x03` deadman or `0x05` stop in the observed controller traffic. A periodic
+> burst of `0x01` / `0x06` / `0x12` / `0x13` (~every 30 s) is an as-yet undecoded
+> status/config poll.
 
 ### CRC variant (confirmed)
 

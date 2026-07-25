@@ -31,12 +31,12 @@ static uint32_t le_value(const uint8_t *p, size_t n) {
 static int append_decode(const DvsFrame &f, char *out, size_t outLen, int n) {
     // Body = everything except the trailing 2 CRC bytes; payload starts after
     // addr + register.
-    if (f.len < 4) {
+    if (!dvs_frame_has_body(f)) {
         return n;
     }
-    const uint8_t reg = f.bytes[1];
-    const uint8_t *payload = &f.bytes[2];
-    const size_t payloadLen = f.len - 4; // minus addr, register, 2x CRC
+    const uint8_t reg = dvs_frame_register(f);
+    const uint8_t *payload = dvs_frame_payload(f);
+    const size_t payloadLen = dvs_frame_payload_len(f);
 
     switch (reg) {
         case REG_TEMP:
@@ -47,9 +47,9 @@ static int append_decode(const DvsFrame &f, char *out, size_t outLen, int n) {
                 // residuals < 0.75 C (display is integer-rounded). May need
                 // revisiting at extremes - no data yet below ~11 C or above 20 C.
                 const int raw = (int)le_value(payload, payloadLen);
-                const float tc = raw * 0.06807f - 1.039f;
+                const float tc = dvs_temp_c_from_raw(raw);
                 n += snprintf(out + n, (n < (int)outLen) ? outLen - n : 0,
-                              " temp_raw=%d temp_c=%.1f", raw, (double)tc);
+                            " temp_raw=%d temp_c=%.1f", raw, (double)tc);
             }
             break;
         case REG_FAN_SPEED:
@@ -61,11 +61,11 @@ static int append_decode(const DvsFrame &f, char *out, size_t outLen, int n) {
             //     speed catching up to the target (soft-start).
             if (payloadLen == 1) {
                 n += snprintf(out + n, (n < (int)outLen) ? outLen - n : 0,
-                              " speed_target=%u", (unsigned)payload[0]);
+                            " speed_target=%u", (unsigned)payload[0]);
             } else if (payloadLen >= 2) {
                 n += snprintf(out + n, (n < (int)outLen) ? outLen - n : 0,
-                              " speed_actual=%u",
-                              (unsigned)le_value(payload, payloadLen));
+                            " speed_actual=%u",
+                            (unsigned)le_value(payload, payloadLen));
             }
             break;
         default:
@@ -102,4 +102,31 @@ int dvs_frame_format(const DvsFrame &f, char *out, size_t outLen,
         n = append_decode(f, out, outLen, n);
     }
     return n;
+}
+
+size_t dvs_frame_build(uint8_t addr, uint8_t reg,
+                       const uint8_t *payload, size_t payloadLen,
+                       uint8_t *out, size_t outLen,
+                       const Crc16Params &params, bool crcBigEndian) {
+    const size_t bodyLen = 2 + payloadLen; // addr + register + payload
+    const size_t total = bodyLen + 2;      // + 2 CRC bytes
+    if (out == nullptr || outLen < total) {
+        return 0;
+    }
+    out[0] = addr;
+    out[1] = reg;
+    for (size_t i = 0; i < payloadLen; ++i) {
+        out[2 + i] = payload[i];
+    }
+    const uint16_t crc = crc16_ccitt(out, bodyLen, params);
+    const uint8_t hi = (uint8_t)((crc >> 8) & 0xFF);
+    const uint8_t lo = (uint8_t)(crc & 0xFF);
+    if (crcBigEndian) {
+        out[bodyLen] = hi;
+        out[bodyLen + 1] = lo;
+    } else {
+        out[bodyLen] = lo;
+        out[bodyLen + 1] = hi;
+    }
+    return total;
 }

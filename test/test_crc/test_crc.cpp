@@ -86,7 +86,7 @@ void test_frame_crc_bad_when_corrupted() {
     TEST_ASSERT_FALSE(dvs_frame_crc_ok(f, Crc16Params{}, false));
 }
 
-// --- Decode / formatting -----------------------------------------------------
+// --- Frame building (transmit path) -------------------------------------------
 
 void test_register_names() {
     TEST_ASSERT_EQUAL_STRING("temperature", dvs_register_name(0x10));
@@ -94,6 +94,38 @@ void test_register_names() {
     TEST_ASSERT_EQUAL_STRING("deadman", dvs_register_name(0x03));
     TEST_ASSERT_EQUAL_STRING("?", dvs_register_name(0x99));
 }
+
+void test_frame_build_matches_capture() {
+    // Building addr=0x02 reg=0x10 payload=DC 00 00 must reproduce the real
+    // captured frame, CRC included, big-endian on the wire: BE 1F.
+    const uint8_t payload[] = {0xDC, 0x00, 0x00};
+    const uint8_t expected[] = {0x02, 0x10, 0xDC, 0x00, 0x00, 0xBE, 0x1F};
+    uint8_t out[16];
+    const size_t n = dvs_frame_build(0x02, 0x10, payload, sizeof(payload), out,
+                                     sizeof(out), Crc16Params{}, /*big=*/true);
+    TEST_ASSERT_EQUAL_UINT(sizeof(expected), n);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(expected, out, sizeof(expected));
+}
+
+void test_frame_build_roundtrips_crc() {
+    // A built frame must verify against the same CRC parameters.
+    const uint8_t payload[] = {42};
+    uint8_t out[16];
+    const size_t n = dvs_frame_build(0x02, 0x15, payload, sizeof(payload), out,
+                                     sizeof(out), Crc16Params{}, /*big=*/true);
+    TEST_ASSERT_EQUAL_UINT(5, n); // addr+reg+1 payload+2 crc
+    TEST_ASSERT_TRUE(crc16_verify_frame(out, n, Crc16Params{}, /*big=*/true));
+}
+
+void test_frame_build_rejects_small_buffer() {
+    const uint8_t payload[] = {1, 2, 3};
+    uint8_t out[4]; // needs 7 bytes, only 4 available
+    TEST_ASSERT_EQUAL_UINT(0, dvs_frame_build(0x02, 0x10, payload,
+                                              sizeof(payload), out, sizeof(out),
+                                              Crc16Params{}, true));
+}
+
+// --- Decode / formatting ------------------------------------------------------
 
 void test_format_contains_decode() {
     // addr=0x01 reg=0x10(temp) payload=0x34 0x12 0x00 + CRC
@@ -127,6 +159,9 @@ int main(int, char **) {
     RUN_TEST(test_frame_crc_ok_little_endian);
     RUN_TEST(test_frame_crc_bad_when_corrupted);
     RUN_TEST(test_register_names);
+    RUN_TEST(test_frame_build_matches_capture);
+    RUN_TEST(test_frame_build_roundtrips_crc);
+    RUN_TEST(test_frame_build_rejects_small_buffer);
     RUN_TEST(test_format_contains_decode);
     return UNITY_END();
 }
