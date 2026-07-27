@@ -19,6 +19,8 @@
 static uint32_t g_busBaud = DEFAULT_BUS_BAUD;
 static uint32_t g_gapThresholdUs = DEFAULT_GAP_THRESHOLD_US;
 static bool g_decode = true;         // decode registers vs raw hex only
+static bool g_badOnly = false;       // print only CRC=BAD frames (bus-error tracking)
+static uint32_t g_badFrameCount = 0; // running total of CRC=BAD frames seen
 static Crc16Params g_crcParams;      // defaults to CRC-16/CCITT-FALSE
 static bool g_crcBigEndian = true;   // transmitted CRC byte order (MSB first)
 // Level driven on the transceiver EN / DE-RE pin. On a textbook MAX3485 LOW is
@@ -156,13 +158,15 @@ static void printConfig() {
         g_crcParams.reflected ? "yes" : "no", g_crcBigEndian ? "yes" : "no",
         g_enableHigh ? "HIGH" : "LOW", g_txEnabled ? "send" : "listen",
         RS485_RX_PIN, RS485_TX_PIN, RS485_DE_RE_PIN);
+    Serial.printf("[cfg] badOnly=%s badCount=%lu\n", g_badOnly ? "on" : "off",
+                (unsigned long)g_badFrameCount);
 }
-
 static void printHelp() {
     Serial.println(F("Commands:"));
     Serial.println(F("  baud <n>      set bus baud rate (e.g. baud 4800)"));
     Serial.println(F("  gap <us>      set inter-frame gap threshold in microseconds"));
     Serial.println(F("  decode        toggle register decoding on/off"));
+    Serial.println(F("  badonly [on|off|reset] show only CRC=BAD frames / reset counter"));
     Serial.println(F("  crcinit <h>   set CRC init value (0x0000 or 0xFFFF)"));
     Serial.println(F("  crcrefl       toggle CRC input/output reflection"));
     Serial.println(F("  crcend        toggle CRC byte order (little/big endian)"));
@@ -185,7 +189,8 @@ static void printHelp() {
 static void publishObserved(const DvsFrame &f) {
     static int lastTempRaw = -1;       // last published raw temp count
     static int lastActualSpeed = -1;   // last published actual speed
-    static int lastTarget = -1;     // last observed on-bus speed target
+    static int lastMirroredTarget = -1;     // last target mirrored to HA state
+    static uint32_t lastNonZeroTargetMs = 0; // time of last non-zero target seen
 
     if (f.len < 4 || !dvs_frame_crc_ok(f, g_crcParams, g_crcBigEndian)) {
         return;
@@ -208,10 +213,32 @@ static void publishObserved(const DvsFrame &f) {
         // are not the controller, so mirror this into the reported fan state so
         // the HA fan entity follows the real fan. (In listen+send mode our own
         // command is authoritative and we do not receive our own transmit.)
-        if ((int)payload[0] != lastTarget) {
-            lastTarget = payload[0];
-            if (!dvsControlGetTxEnabled()) {
-                dvsControlReportObserved(payload[0]);
+        //
+        // The wall controller interleaves a spurious target=0 with the real
+        // target (~every 250 ms) while its screen sleeps, so a raw mirror would
+        // flap the HA power state on/off. Debounce: a non-zero target takes
+        // effect at once; a target of 0 only turns the reported fan off after no
+        // non-zero target for DVS_TARGET_OFF_DEBOUNCE_MS. The sniffed actual-speed
+        // sensor still reports the true (ramping) speed independently.
+        if (!dvsControlGetTxEnabled()) {
+            const uint8_t target = payload[0];
+            const uint32_t nowMs = millis();
+            bool changed = false;
+            if (target > 0) {
+                lastNonZeroTargetMs = nowMs;
+                if (target != lastMirroredTarget || !dvsControlGetPower()) {
+                    dvsControlReportObserved(target);
+                    lastMirroredTarget = target;
+                    changed = true;
+                }
+            } else if (dvsControlGetPower() &&
+                    (nowMs - lastNonZeroTargetMs) >= DVS_TARGET_OFF_DEBOUNCE_MS) {
+                dvsControlReportObserved(0);
+                lastMirroredTarget = 0;
+                changed = true;
+            }
+
+            if (changed) {
                 netPublishState();
             }
         }
@@ -236,6 +263,23 @@ static void flushFrame() {
         return;
     }
     publishObserved(g_frame);
+
+    // Bus-error tracking: count every CRC=BAD frame and, in bad-only mode,
+    // suppress the successful frames so the console shows just the errors (and
+    // their running count) without the noise. publishObserved() above still runs
+    // regardless, so MQTT is unaffected by this display filter.
+    const bool crcOk = dvs_frame_crc_ok(g_frame, g_crcParams, g_crcBigEndian);
+    if (!crcOk) {
+        ++g_badFrameCount;
+    }
+    if (g_badOnly && crcOk) {
+        g_frame.len = 0; // drop good frames from the console in bad-only mode
+        return;
+    }
+    if (g_badOnly) {
+        Serial.printf("[bad #%lu] ", (unsigned long)g_badFrameCount);
+    }
+
     if (g_decode) {
         char line[256];
         dvs_frame_format(g_frame, line, sizeof(line), g_crcParams, g_crcBigEndian);
@@ -278,6 +322,23 @@ static void handleCommand(const String &raw) {
     } else if (cmd == "decode") {
         g_decode = !g_decode;
         Serial.printf("[ok] decode=%s\n", g_decode ? "on" : "off");
+    } else if (cmd.startsWith("badonly")) {
+        String arg = cmd.substring(7);
+        arg.trim();
+        if (arg == "on" || arg == "1") {
+            g_badOnly = true;
+        } else if (arg == "off" || arg == "0") {
+            g_badOnly = false;
+        } else if (arg == "reset") {
+            g_badFrameCount = 0;
+        } else if (arg.isEmpty()) {
+            g_badOnly = !g_badOnly; // bare `badonly` toggles
+        } else {
+            Serial.println(F("[err] usage: badonly [on|off|reset]"));
+            return;
+        }
+        Serial.printf("[ok] badonly=%s badCount=%lu\n", g_badOnly ? "on" : "off",
+                    (unsigned long)g_badFrameCount);
     } else if (cmd.startsWith("crcinit")) {
         long v = strtol(cmd.substring(7).c_str(), nullptr, 0);
         g_crcParams.init = (uint16_t)v;
@@ -375,24 +436,12 @@ void loop() {
     pollUsbCommands();
     netLoop();
 
-    const uint32_t now = micros();
-
-    // Keep the fan spinning while it is meant to be on: mirror the wall
-    // controller and re-send the current speed target (0x15). There is no
-    // separate 0x03 deadman on this bus. Only ever in listen+send mode -- in
-    // listen-only g_fanPower can be set by observed-state mirroring, so this
-    // must be gated on g_txEnabled too (sendCommandFrame guards it as well).
-    if (g_txEnabled && g_fanPower &&
-        (millis() - g_lastKeepaliveMs) >= DVS_KEEPALIVE_INTERVAL_MS) {
-        g_lastKeepaliveMs = millis();
-        sendCommandFrame(REG_FAN_SPEED, &g_fanSpeed, 1);
-    }
-
-    // Close the current frame if the bus has been idle past the threshold.
-    if (g_frame.len > 0 && (now - g_lastByteUs) > g_gapThresholdUs) {
-        flushFrame();
-    }
-
+    // Drain the UART FIFO first. netLoop() (TLS publishes, WiFi/MQTT reconnects)
+    // and the keepalive transmit can block loop() for longer than the inter-frame
+    // gap threshold. Any bytes that arrived meanwhile are buffered in the UART;
+    // reading them all here in one burst keeps a single frame contiguous. If the
+    // gap check below ran first it would fire on our own scheduling delay and
+    // slice one valid frame into two CRC-bad fragments (a false bus error).
     while (Serial2.available() > 0) {
         uint8_t b = (uint8_t)Serial2.read();
         const uint32_t t = micros();
@@ -407,6 +456,26 @@ void loop() {
             }
         }
         g_lastByteUs = t;
+    }
+
+    const uint32_t now = micros();
+
+    // Keep the fan spinning while it is meant to be on: mirror the wall
+    // controller and re-send the current speed target (0x15). There is no
+    // separate 0x03 deadman on this bus. Only ever in listen+send mode - in
+    // listen-only g_fanPower can be set by observed-state mirroring, so this
+    // must be gated on g_txEnabled too (sendCommandFrame guards it as well).
+    if (g_txEnabled && g_fanPower &&
+        (millis() - g_lastKeepaliveMs) >= DVS_KEEPALIVE_INTERVAL_MS) {
+        g_lastKeepaliveMs = millis();
+        sendCommandFrame(REG_FAN_SPEED, &g_fanSpeed, 1);
+    }
+
+    // Close the current frame once the bus has been idle past the threshold. The
+    // FIFO is already drained above, so this now reflects a real on-bus idle gap
+    // rather than a loop stall.
+    if (g_frame.len > 0 && (now - g_lastByteUs) > g_gapThresholdUs) {
+        flushFrame();
     }
 }
 

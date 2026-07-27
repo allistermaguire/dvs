@@ -90,6 +90,14 @@ static constexpr uint32_t DVS_KEEPALIVE_INTERVAL_MS = 300;
 // runtime via the `tx` console command or the dvs/tx/set MQTT topic.
 static constexpr bool DVS_TX_ENABLED_DEFAULT = false;
 
+// Debounce for mirroring an observed fan-speed target of 0 into the reported
+// (MQTT/HA) power state. The wall controller interleaves a spurious target=0
+// with the real target (~every 250 ms) while its screen sleeps, which would
+// otherwise flap the HA power state on/off. A non-zero target is mirrored
+// immediately; a target of 0 only reports "off" once no non-zero target has been
+// seen for this long (a genuine wall-off still turns off after the window).
+static constexpr uint32_t DVS_TARGET_OFF_DEBOUNCE_MS = 5000;
+
 // --- Network / MQTT timing ----------------------------------------------------
 static constexpr uint32_t WIFI_RECONNECT_MS = 10000; // retry Wi-Fi join cadence
 static constexpr uint32_t MQTT_RECONNECT_MS = 5000;  // retry broker connect cadence
