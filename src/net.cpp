@@ -35,6 +35,22 @@ void netPublishState() {
     s_mqtt.publish(MQTT_TOPIC_SPEED_STATE, buf, true);
     s_mqtt.publish(MQTT_TOPIC_TX_STATE, dvsControlGetTxEnabled() ? "ON" : "OFF",
                    true);
+    // Auto-control state.
+    s_mqtt.publish(MQTT_TOPIC_MODE_STATE,
+                  dvsControlGetMode() == DVS_MODE_AUTO ? "auto" : "manual", true);
+    const DvsProfileSel sel = dvsControlGetProfile();
+    s_mqtt.publish(MQTT_TOPIC_PROFILE_STATE,
+                  sel == DVS_PROFILE_SEL_SUMMER	  ? "summer"
+                  : sel == DVS_PROFILE_SEL_WINTER ? "winter"
+                  						          : "auto",
+                  true);
+    s_mqtt.publish(MQTT_TOPIC_MOISTURE_STATE,
+                  dvsControlGetMoistureFloor() ? "ON" : "OFF", true);
+    float inside;
+    if (dvsControlGetInsideTemp(&inside)) {
+        snprintf(buf, sizeof(buf), "%.1f", (double)inside);
+        s_mqtt.publish(MQTT_TOPIC_INSIDE_STATE, buf, true);
+    }
 }
 
 // Parse a truthy ON/1/true payload (case-insensitive).
@@ -66,7 +82,26 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
         }
         dvsControlSetSpeed((uint8_t)v);
         netPublishState();
-    }
+	} else if (strcmp(topic, MQTT_TOPIC_INSIDE_SET) == 0) {
+		dvsControlSetInsideTemp((float)atof(msg));
+		netPublishState();
+	} else if (strcmp(topic, MQTT_TOPIC_MODE_SET) == 0) {
+		dvsControlSetMode(strcasecmp(msg, "auto") == 0 ? DVS_MODE_AUTO
+													   : DVS_MODE_MANUAL);
+		netPublishState();
+	} else if (strcmp(topic, MQTT_TOPIC_PROFILE_SET) == 0) {
+		if (strcasecmp(msg, "summer") == 0) {
+			dvsControlSetProfile(DVS_PROFILE_SEL_SUMMER);
+		} else if (strcasecmp(msg, "winter") == 0) {
+			dvsControlSetProfile(DVS_PROFILE_SEL_WINTER);
+		} else {
+			dvsControlSetProfile(DVS_PROFILE_SEL_AUTO);
+		}
+		netPublishState();
+	} else if (strcmp(topic, MQTT_TOPIC_MOISTURE_SET) == 0) {
+		dvsControlSetMoistureFloor(parseOnOff(msg));
+		netPublishState();
+	}
 }
 
 // Publish Home Assistant MQTT discovery configs (retained) so HA auto-creates a
@@ -115,6 +150,43 @@ static void publishDiscovery() {
         HA_AVAIL "," HA_DEVICE "}",
         true);
 
+	// Control mode select (manual vs automatic summer/winter profiles).
+	s_mqtt.publish(
+		HA_DISCOVERY_PREFIX "/select/dvs/mode/config",
+		"{\"name\":\"Control Mode\",\"uniq_id\":\"dvs_mode\","
+		"\"cmd_t\":\"" MQTT_TOPIC_MODE_SET "\",\"stat_t\":\"" MQTT_TOPIC_MODE_STATE "\","
+		"\"options\":[\"manual\",\"auto\"],\"ent_cat\":\"config\","
+		HA_AVAIL "," HA_DEVICE "}",
+		true);
+
+	// Ventilation profile select (auto resolves summer/winter by temperature).
+	s_mqtt.publish(
+		HA_DISCOVERY_PREFIX "/select/dvs/profile/config",
+		"{\"name\":\"Profile\",\"uniq_id\":\"dvs_profile\","
+		"\"cmd_t\":\"" MQTT_TOPIC_PROFILE_SET "\",\"stat_t\":\"" MQTT_TOPIC_PROFILE_STATE "\","
+		"\"options\":[\"summer\",\"winter\",\"auto\"],\"ent_cat\":\"config\","
+		HA_AVAIL "," HA_DEVICE "}",
+		true);
+
+	// Winter moisture-floor ventilation switch.
+	s_mqtt.publish(
+		HA_DISCOVERY_PREFIX "/switch/dvs/moisture/config",
+		"{\"name\":\"Moisture Ventilation\",\"uniq_id\":\"dvs_moisture\","
+		"\"cmd_t\":\"" MQTT_TOPIC_MOISTURE_SET "\",\"stat_t\":\"" MQTT_TOPIC_MOISTURE_STATE "\","
+		"\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"ent_cat\":\"config\","
+		HA_AVAIL "," HA_DEVICE "}",
+		true);
+
+	// Inside temperature input (feed a Home Assistant sensor value into control).
+	s_mqtt.publish(
+		HA_DISCOVERY_PREFIX "/number/dvs/inside_temp/config",
+		"{\"name\":\"Inside Temperature\",\"uniq_id\":\"dvs_inside_temp\","
+		"\"cmd_t\":\"" MQTT_TOPIC_INSIDE_SET "\",\"stat_t\":\"" MQTT_TOPIC_INSIDE_STATE "\","
+		"\"min\":-10,\"max\":40,\"step\":0.1,\"unit_of_meas\":\"\u00b0C\","
+		"\"dev_cla\":\"temperature\",\"mode\":\"box\",\"ent_cat\":\"config\","
+		HA_AVAIL "," HA_DEVICE "}",
+		true);
+
     // Diagnostic sensors for each status-block register.
     for (uint8_t r : DVS_STATUS_REGS) {
         char topic[64];
@@ -150,6 +222,10 @@ static bool mqttConnect() {
         s_mqtt.subscribe(MQTT_TOPIC_POWER_SET);
         s_mqtt.subscribe(MQTT_TOPIC_SPEED_SET);
         s_mqtt.subscribe(MQTT_TOPIC_TX_SET);
+		s_mqtt.subscribe(MQTT_TOPIC_INSIDE_SET);
+		s_mqtt.subscribe(MQTT_TOPIC_MODE_SET);
+		s_mqtt.subscribe(MQTT_TOPIC_PROFILE_SET);
+		s_mqtt.subscribe(MQTT_TOPIC_MOISTURE_SET);
         publishDiscovery();
         netPublishState();
     } else {

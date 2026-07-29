@@ -34,6 +34,19 @@ static bool g_fanPower = false;         // true while we intend the fan to run
 static uint8_t g_fanSpeed = 0;          // last commanded target speed (0..84)
 static uint8_t g_lastNonZeroSpeed = 0;  // remembered speed for a bare "power on"
 
+// --- Auto ventilation control state -----------------------------------------
+static DvsControlMode g_controlMode = DVS_MODE_MANUAL;   // manual vs auto profile
+static DvsProfileSel g_profileSel = DVS_PROFILE_SEL_AUTO; // summer/winter/auto
+static DvsProfile g_effectiveProfile = DVS_PROFILE_WINTER; // AUTO resolved value
+static bool g_moistureFloor = DVS_MOISTURE_FLOOR_DEFAULT;   // winter moisture vent
+static float g_insideTempC = 0.0f;           // last inside temp fed in (MQTT)
+static bool g_haveInsideTemp = false;
+static uint32_t g_insideTempMs = 0;          // millis() of the last inside-temp update
+static float g_roofTempC = 0.0f;             // last roof temp sniffed from the bus
+static bool g_haveRoofTemp = false;
+static uint32_t g_roofTempMs = 0;            // millis() of the last roof-temp reading
+static uint32_t g_lastControlTickMs = 0;     // last auto-tick time (0 => act now)
+
 // --- Transmit-mode poll cycle state ---
 static uint8_t g_pollReg = REG_FAN_SPEED; // register of the in-flight transaction
 static bool g_pollActive = false;         // a request is currently outstanding
@@ -184,18 +197,153 @@ void dvsControlReportObserved(uint8_t targetSpeed) {
     }
 }
 
+// --- Auto ventilation control (declared in control.h) -----------------------
+void dvsControlSetMode(DvsControlMode mode) {
+    if (g_controlMode == mode) {
+        return;
+    }
+    g_controlMode = mode;
+    g_lastControlTickMs = 0; // recompute on the next loop iteration
+    Serial.printf("[ok] mode=%s\n", mode == DVS_MODE_AUTO ? "auto" : "manual");
+}
+DvsControlMode dvsControlGetMode() { return g_controlMode; }
+
+void dvsControlSetProfile(DvsProfileSel sel) {
+    g_profileSel = sel;
+    // Resolve the effective profile now so state reports are immediately correct.
+    switch (sel) {
+    case DVS_PROFILE_SEL_SUMMER:
+        g_effectiveProfile = DVS_PROFILE_SUMMER;
+        break;
+    case DVS_PROFILE_SEL_WINTER:
+        g_effectiveProfile = DVS_PROFILE_WINTER;
+        break;
+    default:
+        if (g_haveInsideTemp) {
+            g_effectiveProfile = dvsProfileAuto(
+                g_insideTempC, DVS_PROFILE_COMFORT_TARGET_C, g_effectiveProfile);
+        }
+        break;
+    }
+    g_lastControlTickMs = 0; // act on the change promptly
+}
+DvsProfileSel dvsControlGetProfile() { return g_profileSel; }
+DvsProfile dvsControlGetEffectiveProfile() { return g_effectiveProfile; }
+
+void dvsControlSetMoistureFloor(bool on) { g_moistureFloor = on; }
+bool dvsControlGetMoistureFloor() { return g_moistureFloor; }
+
+void dvsControlSetInsideTemp(float celsius) {
+    g_insideTempC = celsius;
+    g_haveInsideTemp = true;
+    g_insideTempMs = millis();
+}
+bool dvsControlGetInsideTemp(float *celsius) {
+    if (!g_haveInsideTemp) {
+        return false;
+    }
+    if (celsius) {
+        *celsius = g_insideTempC;
+    }
+    return true;
+}
+
+// Resolve the profile in effect for this tick (AUTO -> summer/winter by inside
+// temp, with hysteresis inside dvsProfileAuto).
+static DvsProfile controlResolveProfile() {
+    switch (g_profileSel) {
+    case DVS_PROFILE_SEL_SUMMER:
+        return DVS_PROFILE_SUMMER;
+    case DVS_PROFILE_SEL_WINTER:
+        return DVS_PROFILE_WINTER;
+    default:
+        return dvsProfileAuto(g_insideTempC, DVS_PROFILE_COMFORT_TARGET_C,
+                              g_effectiveProfile);
+    }
+}
+
+void dvsControlAutoTick() {
+    if (g_controlMode != DVS_MODE_AUTO) {
+        return;
+    }
+    const uint32_t nowMs = millis();
+    if (g_lastControlTickMs != 0 &&
+        (nowMs - g_lastControlTickMs) < DVS_CONTROL_TICK_MS) {
+        return;
+    }
+    g_lastControlTickMs = nowMs;
+
+    // Listen-only stays silent; the sendCommandFrame chokepoint guards too.
+    if (!g_txEnabled) {
+        return;
+    }
+
+    // Fail safe: a stale/absent roof or inside reading must not hold the fan on.
+    const bool roofFresh =
+        g_haveRoofTemp && (nowMs - g_roofTempMs) < DVS_TEMP_STALE_MS;
+    const bool insideFresh =
+        g_haveInsideTemp && (nowMs - g_insideTempMs) < DVS_TEMP_STALE_MS;
+    if (!roofFresh || !insideFresh) {
+        if (dvsControlGetPower()) {
+            dvsControlSetPower(false);
+            netPublishState();
+            Serial.println(F("[auto] temp stale -> fan off (fail-safe)"));
+        }
+        return;
+    }
+
+    g_effectiveProfile = controlResolveProfile();
+
+    DvsProfileInputs in;
+    in.roofTempC = g_roofTempC;
+    in.insideTempC = g_insideTempC;
+    in.moistureFloor = g_moistureFloor;
+    in.profile = g_effectiveProfile;
+
+    DvsProfileConfig cfg;
+    cfg.deadbandOnC = DVS_PROFILE_DEADBAND_ON_C;
+    cfg.deadbandOffC = DVS_PROFILE_DEADBAND_OFF_C;
+    cfg.spanC = DVS_PROFILE_SPAN_C;
+    cfg.comfortHighC = DVS_PROFILE_COMFORT_HIGH_C;
+    cfg.comfortLowC = DVS_PROFILE_COMFORT_LOW_C;
+    cfg.minSupplyC = DVS_PROFILE_MIN_SUPPLY_C;
+    cfg.maxSupplyC = DVS_PROFILE_MAX_SUPPLY_C;
+    cfg.minSpeed = DVS_PROFILE_MIN_SPEED;
+    cfg.maxSpeed = DVS_PROFILE_MAX_SPEED;
+
+    const uint8_t target = dvsProfileSpeed(in, cfg, g_fanSpeed);
+    if (target == 0) {
+        if (dvsControlGetPower()) {
+            dvsControlSetPower(false);
+            netPublishState();
+        }
+    } else if (target != g_fanSpeed || !dvsControlGetPower()) {
+        dvsControlSetSpeed(target);
+        netPublishState();
+    }
+}
+
 static void printConfig() {
     Serial.printf(
         "[cfg] busBaud=%lu gapUs=%lu decode=%s crcInit=0x%04X crcReflected=%s "
-        "crcBigEndian=%s en=%s tx=%spins(RX=%d TX=%d DE/RE=%d)\n",
+        "crcBigEndian=%s en=%s tx=%s pins(RX=%d TX=%d DE/RE=%d)\n",
         (unsigned long)g_busBaud, (unsigned long)g_gapThresholdUs,
         g_decode ? "on" : "off", g_crcParams.init,
         g_crcParams.reflected ? "yes" : "no", g_crcBigEndian ? "yes" : "no",
         g_enableHigh ? "HIGH" : "LOW", g_txEnabled ? "send" : "listen",
         RS485_RX_PIN, RS485_TX_PIN, RS485_DE_RE_PIN);
-    Serial.printf("[cfg] badOnly=%s badCount=%lu\n", g_badOnly ? "on" : "off",
-                (unsigned long)g_badFrameCount);
+    Serial.printf("[cfg] badonly=%s badCount=%lu\n", g_badOnly ? "on" : "off",
+                  (unsigned long)g_badFrameCount);
+    const char *profStr = (g_profileSel == DVS_PROFILE_SEL_SUMMER) ? "summer"
+                        : (g_profileSel == DVS_PROFILE_SEL_WINTER) ? "winter"
+                                                                   :  "auto";
+    Serial.printf("[cfg] mode=%s profile=%s(->%s) moisture=%s inside=%s\n",
+                  g_controlMode == DVS_MODE_AUTO ? "auto" : "manual", profStr,
+                  g_effectiveProfile == DVS_PROFILE_SUMMER ? "summer" : "winter",
+                  g_moistureFloor ? "on" : "off",
+                  g_haveInsideTemp ? String(g_insideTempC, 1).c_str() : "n/a");
 }
+
 static void printHelp() {
     Serial.println(F("Commands:"));
     Serial.println(F("  baud <n>      set bus baud rate (e.g. baud 4800)"));
@@ -210,6 +358,10 @@ static void printHelp() {
     Serial.println(F("  on            power the fan on (last/default speed)"));
     Serial.println(F("  off           power the fan off (stop)"));
     Serial.println(F("  speed <n>     set target fan speed 0..84"));
+    Serial.println(F("  mode <manual|auto>    manual control vs auto profiles"));
+    Serial.println(F("  profile <summer|winter|auto> select ventilation profile"));
+    Serial.println(F("  moisture [on|off]     winter moisture-floor ventilation"));
+    Serial.println(F("  inside <degC>         feed the inside temperature"));
     Serial.println(F("  status        print current configuration"));
     Serial.println(F("  help          show this help"));
 }
@@ -235,8 +387,13 @@ static void publishObserved(const DvsFrame &f) {
     const size_t payloadLen = dvs_frame_payload_len(f);
     if (reg == REG_TEMP && payloadLen >= 1) {
         // Byte 0 is the raw roof-space count; higher bytes are 0 in captures.
+        const float tc = dvs_temp_c_from_raw(payload[0]);
+        // Cache every reading (not just published ones) so the auto-control tick
+        // has a fresh roof (supply) temperature and can judge staleness.
+        g_roofTempC = tc;
+        g_roofTempMs = millis();
+        g_haveRoofTemp = true;
         if ((int)payload[0] != lastTempRaw) {
-            const float tc = dvs_temp_c_from_raw(payload[0]);
             // Only advance the dedupe cache once the value is actually sent,
             // so values seen before MQTT connects are not lost.
             if (netPublishTemperature(tc)) {
@@ -272,7 +429,6 @@ static void publishObserved(const DvsFrame &f) {
                 lastMirroredTarget = 0;
                 changed = true;
             }
-
             if (changed) {
                 netPublishState();
             }
@@ -442,6 +598,55 @@ static void handleCommand(const String &raw) {
         } else {
             Serial.printf("[err] usage: speed <0..%u>\n", (unsigned)DVS_MAX_SPEED);
         }
+    } else if (cmd.startsWith("mode")) {
+        String arg = cmd.substring(4);
+        arg.trim();
+        if (arg == "auto") {
+            dvsControlSetMode(DVS_MODE_AUTO);
+        } else if (arg == "manual") {
+            dvsControlSetMode(DVS_MODE_MANUAL);
+        } else {
+            Serial.println(F("[err] usage: mode <manual|auto>"));
+        }
+    } else if (cmd.startsWith("profile")) {
+        String arg = cmd.substring(7);
+        arg.trim();
+        if (arg == "summer") {
+            dvsControlSetProfile(DVS_PROFILE_SEL_SUMMER);
+        } else if (arg == "winter") {
+            dvsControlSetProfile(DVS_PROFILE_SEL_WINTER);
+        } else if (arg == "auto") {
+            dvsControlSetProfile(DVS_PROFILE_SEL_AUTO);
+        } else {
+            Serial.println(F("[err] usage: profile <summer|winter|auto>"));
+            return;
+        }
+        Serial.printf("[ok] profile=%s\n", arg.c_str());
+    } else if (cmd.startsWith("moisture")) {
+        String arg = cmd.substring(8);
+        arg.trim();
+        if (arg == "on" || arg == "1") {
+            dvsControlSetMoistureFloor(true);
+        } else if (arg == "off" || arg == "0") {
+            dvsControlSetMoistureFloor(false);
+        } else if (arg.isEmpty()) {
+            dvsControlSetMoistureFloor(!dvsControlGetMoistureFloor());
+        } else {
+            Serial.println(F("[err] usage: moisture [on|off]"));
+            return;
+        }
+        Serial.printf("[ok] moisture=%s\n",
+                      dvsControlGetMoistureFloor() ? "on" : "off");
+    } else if (cmd.startsWith("inside")) {
+        String arg = cmd.substring(6);
+        arg.trim();
+        if (arg.isEmpty()) {
+            Serial.println(F("[err] usage: inside <degC>"));
+        } else {
+            const float t = arg.toFloat();
+            dvsControlSetInsideTemp(t);
+            Serial.printf("[ok] inside=%.1f\n", (double)t);
+        }
     } else if (cmd == "status") {
         printConfig();
     } else if (cmd == "help") {
@@ -578,6 +783,10 @@ void loop() {
     if (g_txEnabled) {
         pollCycleStep();
     }
+
+    // Auto ventilation control: recompute a target speed from the roof and
+    // inside temperatures on its own cadence (no-op in manual mode / listen-only).
+    dvsControlAutoTick();
 
     // Close the current frame once the bus has been idle past the threshold. The
     // FIFO is already drained above, so this now reflects a real on-bus idle gap

@@ -116,6 +116,50 @@ static constexpr bool DVS_TX_ENABLED_DEFAULT = false;
 // seen for this long (a genuine wall-off still turns off after the window).
 static constexpr uint32_t DVS_TARGET_OFF_DEBOUNCE_MS = 5000;
 
+// --- Automatic ventilation profiles (summer / winter) ---
+// When the control mode is `auto` (and transmit is enabled) the firmware acts on
+// the roof (supply) temperature sniffed from the bus and an inside temperature
+// fed in over MQTT (dvs/inside_temp/set), computing a proportional fan speed via
+// the pure logic in profile.cpp. The unit is positive-pressure roof air with no
+// heat-recovery core, so the air entering the house is the RAW roof temperature
+// (there is no tempering blend). Defaults below are tuned for Wellington NZ,
+// where the primary job is moisture/condensation control; all are runtime
+// tunable over MQTT/console. See profile.h for the decision logic.
+//
+// Hysteresis: a stopped fan needs deadbandOn of favourable differential to
+// start, a running fan keeps going until it drops below deadbandOff.
+static constexpr float DVS_PROFILE_DEADBAND_ON_C = 1.5f;
+static constexpr float DVS_PROFILE_DEADBAND_OFF_C = 0.5f;
+// Favourable differential at which the fan reaches maxSpeed.
+static constexpr float DVS_PROFILE_SPAN_C = 5.0f;
+// Winter: stop once the house is already this warm (avoid overheating).
+static constexpr float DVS_PROFILE_COMFORT_HIGH_C = 21.0f;
+// Summer: stop once the house is already this cool (don't chill below sleeping).
+static constexpr float DVS_PROFILE_COMFORT_LOW_C = 18.0f;
+// Winter: never supply raw roof air colder than this (matches the observed unit
+// still ventilating for moisture at ~13 C; the floor is checked on RAW roof
+// temp, since there is no exchanger core to warm the incoming air).
+static constexpr float DVS_PROFILE_MIN_SUPPLY_C = 12.0f;
+// Summer: never bring in roof air hotter than this (block hot midday air).
+static constexpr float DVS_PROFILE_MAX_SUPPLY_C = 24.0f;
+// Proportional speed range used by the profiles (a gentle trickle .. boost).
+static constexpr uint8_t DVS_PROFILE_MIN_SPEED = 12;
+static constexpr uint8_t DVS_PROFILE_MAX_SPEED = DVS_MAX_SPEED;
+// `auto` profile select: inside above this -> summer (cooling), below -> winter
+// (heating), with a small deadband inside profile.cpp to avoid flip-flopping.
+static constexpr float DVS_PROFILE_COMFORT_TARGET_C = 19.0f;
+
+// Winter "moisture floor" default: keep a trickle of ventilation going for
+// moisture/condensation control even when the roof air is not adding heat (as
+// long as it is above DVS_PROFILE_MIN_SUPPLY_C). Runtime-toggleable.
+static constexpr bool DVS_MOISTURE_FLOOR_DEFAULT = true;
+
+// How often the auto-control tick recomputes and applies a target speed.
+static constexpr uint32_t DVS_CONTROL_TICK_MS = 10000;
+// Auto control fails safe to OFF if either the roof or the inside temperature is
+// older than this (a stale/absent reading must not silently hold the fan on).
+static constexpr uint32_t DVS_TEMP_STALE_MS = 300000; // 5 min
+
 // --- Network / MQTT timing ----------------------------------------------------
 static constexpr uint32_t WIFI_RECONNECT_MS = 10000; // retry Wi-Fi join cadence
 static constexpr uint32_t MQTT_RECONNECT_MS = 5000;  // retry broker connect cadence
@@ -136,6 +180,16 @@ static constexpr uint32_t STATE_PUBLISH_MS  = 15000; // periodic state republish
 #define MQTT_TOPIC_TEMPERATURE   MQTT_TOPIC_BASE "/temperature"  // out: sniffed roof temp
 #define MQTT_TOPIC_TX_SET        MQTT_TOPIC_BASE "/tx/set"       // in:  ON / OFF (send vs listen)
 #define MQTT_TOPIC_TX_STATE      MQTT_TOPIC_BASE "/tx/state"     // out: ON / OFF
+// Automatic ventilation control. Inside temperature is fed in (e.g. from a Home
+// Assistant sensor); mode/profile/moisture select the summer/winter behaviour.
+#define MQTT_TOPIC_INSIDE_SET     MQTT_TOPIC_BASE "/inside_temp/set"  // in:  deg C
+#define MQTT_TOPIC_INSIDE_STATE   MQTT_TOPIC_BASE "/inside_temp/state"  // out: deg C (echo)
+#define MQTT_TOPIC_MODE_SET       MQTT_TOPIC_BASE "/mode/set"         // in:  manual / auto
+#define MQTT_TOPIC_MODE_STATE     MQTT_TOPIC_BASE "/mode/state"       // out: manual / auto
+#define MQTT_TOPIC_PROFILE_SET    MQTT_TOPIC_BASE "/profile/set"      // in:  summer / winter / auto
+#define MQTT_TOPIC_PROFILE_STATE  MQTT_TOPIC_BASE "/profile/state"    // out: summer / winter / auto
+#define MQTT_TOPIC_MOISTURE_SET   MQTT_TOPIC_BASE "/moisture/set"     // in:  ON / OFF
+#define MQTT_TOPIC_MOISTURE_STATE MQTT_TOPIC_BASE "/moisture/state"   // out: ON / OFF
 // Raw payload of the periodic status-block registers (0x01/0x06/0x12/0x13),
 // published as hex whenever the fan responds. Register hex is appended, e.g.
 // dvs/status/reg/06. Watch these to learn what triggers the block and how often.
