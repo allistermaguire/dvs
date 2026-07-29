@@ -33,12 +33,19 @@ static bool g_txEnabled = DVS_TX_ENABLED_DEFAULT; // false => listen-only
 static bool g_fanPower = false;         // true while we intend the fan to run
 static uint8_t g_fanSpeed = 0;          // last commanded target speed (0..84)
 static uint8_t g_lastNonZeroSpeed = 0;  // remembered speed for a bare "power on"
-static uint32_t g_lastKeepaliveMs = 0;  // last keep-alive (0x15 re-send) time
-static uint32_t g_lastTempPollMs = 0;   // last temperature (0x10) poll time
 
-// --- Frame assembly ----------------------------------------------------------
+// --- Transmit-mode poll cycle state ---
+static uint8_t g_pollReg = REG_FAN_SPEED; // register of the in-flight transaction
+static bool g_pollActive = false;         // a request is currently outstanding
+static bool g_pollResent = false;         // the doubled resend has been sent
+static uint32_t g_pollSentMs = 0;         // when the request was first sent
+static uint32_t g_pollGapUntilMs = 0;     // don't start the next request before this
+
+// Frame assembly ---
 static DvsFrame g_frame;
 static uint32_t g_lastByteUs = 0;
+static uint8_t g_rxReg = 0;             // register of the last CRC-OK frame received
+static uint32_t g_rxRegMs = 0;          // millis() when it arrived (poll reply detect)
 
 static void applyEnable() {
     digitalWrite(RS485_DE_RE_PIN, g_enableHigh ? HIGH : LOW);
@@ -116,7 +123,6 @@ void dvsControlSetSpeed(uint8_t speed) {
     g_lastNonZeroSpeed = speed;
     g_fanPower = true;
     sendCommandFrame(REG_FAN_SPEED, &speed, 1);
-    g_lastKeepaliveMs = millis();
 }
 
 void dvsControlSetPower(bool on) {
@@ -130,13 +136,12 @@ void dvsControlSetPower(bool on) {
     } else {
         // "Off" matches the wall controller: write fan-speed target 0 (there is
         // no separate stop register in captures). Send one explicit 0 now for an
-        // immediate response, but leave the keepalive running so we keep
-        // re-writing the target (now 0) at the controller cadence rather than
-        // going silent - on/off is expressed purely through the target value the
-        // keepalive re-sends, not by starting/stopping the transmit.
+        // immediate response; the poll cycle then keeps re-writing the target
+        // (now 0) at the controller cadence rather than going silent - on/off is
+        // expressed purely through the target value the keepalive re-sends, not
+        // by starting/stopping the transmit.
         g_fanPower = false;
         g_fanSpeed = 0;
-        g_lastKeepaliveMs = millis();
         const uint8_t zero = 0;
         sendCommandFrame(REG_FAN_SPEED, &zero, 1);
     }
@@ -155,6 +160,12 @@ void dvsControlSetTxEnabled(bool enabled) {
         // goes quiet. We do NOT transmit anything here - listen-only is silent.
         g_fanPower = false;
         g_fanSpeed = 0;
+    } else {
+        // Resuming transmit: restart the poll cycle cleanly on the 0x15 write so
+        // stale in-flight state can't cause an immediate timeout.
+        g_pollActive = false;
+        g_pollReg = REG_FAN_SPEED;
+        g_pollGapUntilMs = 0;
     }
     Serial.printf("[ok] tx=%s (%s)\n", g_txEnabled ? "on" : "off",
                     g_txEnabled ? "listen+send" : "listen-only");
@@ -286,6 +297,17 @@ static void flushFrame() {
     if (g_frame.len == 0) {
         return;
     }
+
+    // Drop runt captures shorter than the minimum DVS frame (addr+reg+crc16 =
+    // 4 bytes). These can't be valid and are almost always an RS485 turnaround
+    // glitch - a stray byte the UART latches when we release the driver after
+    // transmitting. Discarding them keeps them out of the CRC-BAD count/console
+    // as false bus errors (genuine corruption still garbles full-length frames).
+    if (!dvs_frame_has_body(g_frame)) {
+        g_frame.len = 0;
+        return;
+    }
+
     publishObserved(g_frame);
 
     // Bus-error tracking: count every CRC=BAD frame and, in bad-only mode,
@@ -295,6 +317,12 @@ static void flushFrame() {
     const bool crcOk = dvs_frame_crc_ok(g_frame, g_crcParams, g_crcBigEndian);
     if (!crcOk) {
         ++g_badFrameCount;
+    }
+    if (crcOk && g_frame.len >= 2) {
+        // Note the fan's reply for the response-driven poll cycle: in transmit
+        // mode every received frame is a reply to one of our requests.
+        g_rxReg = dvs_frame_register(g_frame);
+        g_rxRegMs = millis();
     }
     if (g_badOnly && crcOk) {
         g_frame.len = 0; // drop good frames from the console in bad-only mode
@@ -456,6 +484,65 @@ void setup() {
     netSetup();
 }
 
+// --- Option 2: response-driven poll cycle ------------------------------------
+// Send the request for the current transaction's register.
+static void pollSendRequest() {
+    if (g_pollReg == REG_TEMP) {
+        sendCommandFrame(REG_TEMP, nullptr, 0);          // roof-temperature query
+    } else {
+        sendCommandFrame(REG_FAN_SPEED, &g_fanSpeed, 1); // speed target / keepalive
+    }
+}
+
+// Finish the current transaction, leave a quiet gap, then switch registers so
+// the 0x15 write and 0x10 read alternate 1:1 (like the wall controller).
+static void pollEndTransaction(uint32_t nowMs) {
+    g_pollActive = false;
+    g_pollGapUntilMs = nowMs + DVS_POLL_GAP_MS;
+    g_pollReg = (g_pollReg == REG_FAN_SPEED) ? (uint8_t)REG_TEMP
+                                             : (uint8_t)REG_FAN_SPEED;
+}
+
+// One non-blocking step of the response-driven poll cycle (only while
+// transmitting). Alternates a 0x15 write and a 0x10 read, one outstanding at a
+// time; resends once if no reply arrives (the controller's doubled frame) and
+// advances after the reply or a timeout so a silent register never stalls the
+// keepalive. Keeping the two conversations 1:1 stops the fan locking onto the
+// keepalive and ignoring the temperature query (the failure of the independent
+// timers). Reply detection: in transmit mode every received frame is a fan reply
+// (we never hear our own transmit), so a CRC-OK frame of the requested register
+// that arrived after we sent is ours.
+static void pollCycleStep() {
+    const uint32_t nowMs = millis();
+
+    if ((int32_t)(nowMs - g_pollGapUntilMs) < 0) {
+        return; // quiet inter-transaction gap
+    }
+
+    if (!g_pollActive) {
+        g_pollActive = true;
+        g_pollResent = false;
+        g_pollSentMs = nowMs;
+        pollSendRequest();
+        return;
+    }
+
+    if (g_rxReg == g_pollReg && (int32_t)(g_rxRegMs - g_pollSentMs) >= 0) {
+        pollEndTransaction(nowMs); // reply received
+        return;
+    }
+
+    if (!g_pollResent && (nowMs - g_pollSentMs) >= DVS_POLL_RESEND_MS) {
+        g_pollResent = true;
+        pollSendRequest(); // resend once (the doubled frame)
+        return;
+    }
+
+    if ((nowMs - g_pollSentMs) >= DVS_POLL_REPLY_TIMEOUT_MS) {
+        pollEndTransaction(nowMs); // give up, keep the cycle moving
+    }
+}
+
 void loop() {
     pollUsbCommands();
     netLoop();
@@ -484,39 +571,12 @@ void loop() {
 
     const uint32_t now = micros();
 
-    // Keep the fan spinning while it is meant to be on: mirror the wall
-    // controller and re-send the current speed target (0x15). There is no
-    // separate 0x03 deadman on this bus. Only ever in listen+send mode - in
-    // listen-only g_fanPower can be set by observed-state mirroring, so this
-    // must be gated on g_txEnabled too (sendCommandFrame guards it as well).
-    //if (g_txEnabled && g_fanPower &&
-    //    (millis() - g_lastKeepaliveMs) >= DVS_KEEPALIVE_INTERVAL_MS) {
-    //    g_lastKeepaliveMs = millis();
-    //    sendCommandFrame(REG_FAN_SPEED, &g_fanSpeed, 1);
-    //}
-
-    // Mirror the wall controller: while transmitting, continuously re-write the
-    // current fan-speed target (0x15) at the controller cadence, regardless of
-    // on/off. On is target=speed, off is target=0 - the keepalive keeps sending
-    // whichever it is, so power is expressed by the value, not by starting or
-    // stopping the transmit. There is no separate 0x03 deadman on this bus.
-    // Gated on g_txEnabled only: listen-only stays silent even though observed-
-    // state mirroring can set g_fanPower (sendCommandFrame guards it as well).
-    if (g_txEnabled &&
-        (millis() - g_lastKeepaliveMs) >= DVS_KEEPALIVE_INTERVAL_MS) {
-        g_lastKeepaliveMs = millis();
-        sendCommandFrame(REG_FAN_SPEED, &g_fanSpeed, 1);
-    }
-
-    // Poll the roof-space temperature (0x10) the way the wall controller does.
-    // Without the controller nothing queries 0x10, so the fan never sends a
-    // temperature frame; issuing the empty query ourselves elicits its response
-    // (which then decodes/publishes like any other frame). tx-only for the same
-    // reason as the keepalive: listen-only never drives the bus.
-    if (g_txEnabled &&
-        (millis() - g_lastTempPollMs) >= DVS_TEMP_POLL_INTERVAL_MS) {
-        g_lastTempPollMs = millis();
-        sendCommandFrame(REG_TEMP, nullptr, 0);
+    // Drive the transmit-mode poll cycle: a response-driven 1:1 alternation of
+    // the 0x15 keepalive and the 0x10 temperature read (see pollCycleStep /
+    // config.h). tx-only: listen-only stays silent even though observed-state
+    // mirroring can set g_fanPower (sendCommandFrame guards it as well).
+    if (g_txEnabled) {
+        pollCycleStep();
     }
 
     // Close the current frame once the bus has been idle past the threshold. The
