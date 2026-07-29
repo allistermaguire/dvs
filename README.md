@@ -306,9 +306,11 @@ How control maps onto the bus:
   controller has **no separate stop register** (`0x05`) – "off" is just speed 0,
   and the fan ramps down on its own.
 - **Power on** → re-send the last non-zero speed (or `DVS_DEFAULT_SPEED`).
-- **Keep-alive** → while the fan is on, the current speed target (`0x15`) is
-  re-sent every `DVS_KEEPALIVE_INTERVAL_MS` (~250 ms, matching the controller).
-  There is **no `0x03` deadman** on this bus – re-writing `0x15` is the keepalive.
+- **Keep-alive** -> the current speed target (`0x15`) is re-sent every
+  `DVS_KEEPALIVE_INTERVAL_MS` (300 ms). The controller itself doubles each write
+  (~75 ms apart) and repeats the pair every ~258 ms (max gap the fan sees
+  ~182 ms); the firmware simplifies this to a single re-send. There is **no
+  `0x03` deadman** on this bus - re-writing `0x15` is the keepalive.
 
 The same actions are available over USB via the `on`, `off` and `speed <n>`
 console commands, which is the easiest way to test the transmit path before

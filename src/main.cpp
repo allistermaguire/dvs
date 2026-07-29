@@ -34,6 +34,7 @@ static bool g_fanPower = false;         // true while we intend the fan to run
 static uint8_t g_fanSpeed = 0;          // last commanded target speed (0..84)
 static uint8_t g_lastNonZeroSpeed = 0;  // remembered speed for a bare "power on"
 static uint32_t g_lastKeepaliveMs = 0;  // last keep-alive (0x15 re-send) time
+static uint32_t g_lastTempPollMs = 0;   // last temperature (0x10) poll time
 
 // --- Frame assembly ----------------------------------------------------------
 static DvsFrame g_frame;
@@ -75,8 +76,27 @@ static void sendCommandFrame(uint8_t reg, const uint8_t *payload, size_t payload
         return;
     }
     busTransmit(buf, n);
-    Serial.printf("[tx] addr=0x%02X reg=0x%02X len=%u\n", DVS_FAN_ADDR, reg,
-                    (unsigned)n);
+
+    // Echo the transmitted frame through the same decoder used for received
+    // frames. We never hear our own transmit back (the driver is enabled and the
+    // receiver muted while sending), so without this the console would only ever
+    // show the fan's responses and never what we actually put on the wire.
+    // Honours the `decode` toggle exactly like flushFrame() does for RX frames.
+    DvsFrame txFrame;
+    txFrame.startMicros = micros();
+    txFrame.len = (n <= MAX_FRAME_LEN) ? n : MAX_FRAME_LEN;
+    memcpy(txFrame.bytes, buf, txFrame.len);
+    if (g_decode) {
+        char line[256];
+        dvs_frame_format(txFrame, line, sizeof(line), g_crcParams, g_crcBigEndian);
+        Serial.printf("[tx] %s\n", line);
+    } else {
+        Serial.printf("[tx] len=%u", (unsigned)txFrame.len);
+        for (size_t i = 0; i < txFrame.len; ++i) {
+            Serial.printf(" %02X", txFrame.bytes[i]);
+        }
+        Serial.println();
+    }
 }
 
 // --- Fan control API (declared in control.h) ----------------------------------
@@ -109,10 +129,14 @@ void dvsControlSetPower(bool on) {
         dvsControlSetSpeed(s); // sets state + transmits the speed
     } else {
         // "Off" matches the wall controller: write fan-speed target 0 (there is
-        // no separate stop register in captures). One write is enough; the fan
-        // ramps down on its own.
+        // no separate stop register in captures). Send one explicit 0 now for an
+        // immediate response, but leave the keepalive running so we keep
+        // re-writing the target (now 0) at the controller cadence rather than
+        // going silent - on/off is expressed purely through the target value the
+        // keepalive re-sends, not by starting/stopping the transmit.
         g_fanPower = false;
         g_fanSpeed = 0;
+        g_lastKeepaliveMs = millis();
         const uint8_t zero = 0;
         sendCommandFrame(REG_FAN_SPEED, &zero, 1);
     }
@@ -465,10 +489,34 @@ void loop() {
     // separate 0x03 deadman on this bus. Only ever in listen+send mode - in
     // listen-only g_fanPower can be set by observed-state mirroring, so this
     // must be gated on g_txEnabled too (sendCommandFrame guards it as well).
-    if (g_txEnabled && g_fanPower &&
+    //if (g_txEnabled && g_fanPower &&
+    //    (millis() - g_lastKeepaliveMs) >= DVS_KEEPALIVE_INTERVAL_MS) {
+    //    g_lastKeepaliveMs = millis();
+    //    sendCommandFrame(REG_FAN_SPEED, &g_fanSpeed, 1);
+    //}
+
+    // Mirror the wall controller: while transmitting, continuously re-write the
+    // current fan-speed target (0x15) at the controller cadence, regardless of
+    // on/off. On is target=speed, off is target=0 - the keepalive keeps sending
+    // whichever it is, so power is expressed by the value, not by starting or
+    // stopping the transmit. There is no separate 0x03 deadman on this bus.
+    // Gated on g_txEnabled only: listen-only stays silent even though observed-
+    // state mirroring can set g_fanPower (sendCommandFrame guards it as well).
+    if (g_txEnabled &&
         (millis() - g_lastKeepaliveMs) >= DVS_KEEPALIVE_INTERVAL_MS) {
         g_lastKeepaliveMs = millis();
         sendCommandFrame(REG_FAN_SPEED, &g_fanSpeed, 1);
+    }
+
+    // Poll the roof-space temperature (0x10) the way the wall controller does.
+    // Without the controller nothing queries 0x10, so the fan never sends a
+    // temperature frame; issuing the empty query ourselves elicits its response
+    // (which then decodes/publishes like any other frame). tx-only for the same
+    // reason as the keepalive: listen-only never drives the bus.
+    if (g_txEnabled &&
+        (millis() - g_lastTempPollMs) >= DVS_TEMP_POLL_INTERVAL_MS) {
+        g_lastTempPollMs = millis();
+        sendCommandFrame(REG_TEMP, nullptr, 0);
     }
 
     // Close the current frame once the bus has been idle past the threshold. The

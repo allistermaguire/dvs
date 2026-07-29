@@ -80,10 +80,30 @@ static constexpr uint8_t DVS_MAX_SPEED = 84;      // measured 0 (off) .. 84 (boo
 static constexpr uint8_t DVS_DEFAULT_SPEED = 42;  // mid speed for a bare "on"
 
 // Keep-alive cadence. Live captures show the wall controller does NOT use a
-// separate deadman (0x03); instead it continuously re-writes the fan-speed
-// target (0x15) about every ~250 ms. We mirror that: while the fan is meant to
-// run we re-send the current target at this interval. "Off" is a single 0x15=0.
+// separate deadman (0x03); instead it re-writes the fan-speed target (0x15) to
+// keep the fan alive. Its exact pattern is a doubled write (~75 ms apart)
+// repeated every ~258 ms, so the fan sees a target write with a max gap of
+// ~182 ms. We simplify that to a single re-send at this interval (looser than
+// the controller's max gap, but measured stable). NOTE: the temperature query
+// is deferred to DVS_TEMP_QUERY_OFFSET_MS into this gap, so changing this value
+// means re-checking that offset still lands clear of the next keepalive.
+// "Off" is just target 0.
 static constexpr uint32_t DVS_KEEPALIVE_INTERVAL_MS = 300;
+
+// How often to poll the roof-space temperature (register 0x10) while
+// transmitting. Normally the wall controller polls 0x10 and the fan responds;
+// with the controller disconnected nothing asks for it, so no temperature frame
+// ever appears. When acting as the controller (tx on) we issue the empty 0x10
+// query ourselves at this cadence so the fan answers with its temperature.
+//
+// NOTE (measured): the fan answers a 0x10 only sporadically (~1 in 3) once it is
+// locked onto our 0x15 keepalive stream - it appears to track a single register
+// conversation at a time, and our keepalive dominates it. Phase alignment and
+// doubling the query were both tried and did NOT help; a single query on this
+// timer is the best simple option (temp refreshes ~every 3 s, fine for a slowly
+// changing roof reading). A reliable fix needs a response-driven 1:1 poll cycle
+// like the real controller - see the fan-off notes.
+static constexpr uint32_t DVS_TEMP_POLL_INTERVAL_MS = 1000;
 
 // Transmit mode at boot: false = listen-only (never drive the bus),
 // true = listen + send (control commands are allowed to transmit). Switchable at
