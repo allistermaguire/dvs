@@ -234,13 +234,20 @@ static void publishObserved(const DvsFrame &f) {
     const uint8_t *payload = dvs_frame_payload(f);
     const size_t payloadLen = dvs_frame_payload_len(f);
     if (reg == REG_TEMP && payloadLen >= 1) {
+        // Raw roof-space count is little-endian across the payload: above ~16 C
+        // it exceeds one byte (byte 1 becomes non-zero), so read the full value
+        // rather than byte 0 alone (byte-0-only wraps, e.g. 18 C -> 0.6 C).
+        uint32_t raw = 0;
+        for (size_t i = 0; i < payloadLen; ++i) {
+            raw |= (uint32_t)payload[i] << (8 * i);
+        }
         // Byte 0 is the raw roof-space count; higher bytes are 0 in captures.
-        if ((int)payload[0] != lastTempRaw) {
-            const float tc = dvs_temp_c_from_raw(payload[0]);
+        if ((int)raw != lastTempRaw) {
+            const float tc = dvs_temp_c_from_raw((int)raw);
             // Only advance the dedupe cache once the value is actually sent,
             // so values seen before MQTT connects are not lost.
             if (netPublishTemperature(tc)) {
-                lastTempRaw = payload[0];
+                lastTempRaw = (int)raw;
             }
         }
     } else if (reg == REG_FAN_SPEED && payloadLen == 1) {
