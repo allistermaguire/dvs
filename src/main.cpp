@@ -386,18 +386,24 @@ static void publishObserved(const DvsFrame &f) {
     const uint8_t *payload = dvs_frame_payload(f);
     const size_t payloadLen = dvs_frame_payload_len(f);
     if (reg == REG_TEMP && payloadLen >= 1) {
-        // Byte 0 is the raw roof-space count; higher bytes are 0 in captures.
-        const float tc = dvs_temp_c_from_raw(payload[0]);
+        // Raw roof-space count is little-endian across the payload: above ~16 C
+        // it exceeds one byte (byte 1 becomes non-zero), so read the full value
+        // rather than byte 0 alone (byte-0-only wraps, e.g. 18 C -> 0.6 C).
+        uint32_t raw = 0;
+        for (size_t i = 0; i < payloadLen; ++i) {
+            raw |= (uint32_t)payload[i] << (8 * i);
+        }
+        const float tc = dvs_temp_c_from_raw((int)raw);
         // Cache every reading (not just published ones) so the auto-control tick
         // has a fresh roof (supply) temperature and can judge staleness.
         g_roofTempC = tc;
         g_roofTempMs = millis();
         g_haveRoofTemp = true;
-        if ((int)payload[0] != lastTempRaw) {
+        if ((int)raw != lastTempRaw) {
             // Only advance the dedupe cache once the value is actually sent,
             // so values seen before MQTT connects are not lost.
             if (netPublishTemperature(tc)) {
-                lastTempRaw = payload[0];
+                lastTempRaw = (int)raw;
             }
         }
     } else if (reg == REG_FAN_SPEED && payloadLen == 1) {
