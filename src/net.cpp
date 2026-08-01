@@ -25,6 +25,13 @@ static uint32_t s_lastWifiAttempt = 0;
 static uint32_t s_lastMqttAttempt = 0;
 static uint32_t s_lastStatePublish = 0;
 
+// One-shot restore of mode/profile/tx/moisture from the retained */state topics
+// on the first connect after boot. While active we suspend our own state
+// publishing so the retained values aren't clobbered before we read them back.
+static bool s_restoreDone = false;
+static bool s_restoreActive = false;
+static uint32_t s_restoreDeadline = 0;
+
 void netPublishState() {
     if (!s_mqtt.connected()) {
         return;
@@ -61,6 +68,31 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
     unsigned int n = (len < sizeof(msg) - 1) ? len : sizeof(msg) - 1;
     memcpy(msg, payload, n);
     msg[n] = '\0';
+
+    // Boot restore: apply the retained */state values via the setters only (the
+    // setters don't publish, so this can't loop back to us while subscribed).
+    if (s_restoreActive) {
+        if (strcmp(topic, MQTT_TOPIC_MODE_STATE) == 0) {
+            dvsControlSetMode(strcasecmp(msg, "auto") == 0 ? DVS_MODE_AUTO
+                                                           : DVS_MODE_MANUAL);
+            return;
+        } else if (strcmp(topic, MQTT_TOPIC_PROFILE_STATE) == 0) {
+            if (strcasecmp(msg, "summer") == 0) {
+                dvsControlSetProfile(DVS_PROFILE_SEL_SUMMER);
+            } else if (strcasecmp(msg, "winter") == 0) {
+                dvsControlSetProfile(DVS_PROFILE_SEL_WINTER);
+            } else {
+                dvsControlSetProfile(DVS_PROFILE_SEL_AUTO);
+            }
+            return;
+        } else if (strcmp(topic, MQTT_TOPIC_TX_STATE) == 0) {
+            dvsControlSetTxEnabled(dvsParseOnOff(msg));
+            return;
+        } else if (strcmp(topic, MQTT_TOPIC_MOISTURE_STATE) == 0) {
+            dvsControlSetMoistureFloor(dvsParseOnOff(msg));
+            return;
+        }
+    }
 
     if (strcmp(topic, MQTT_TOPIC_TX_SET) == 0) {
         dvsControlSetTxEnabled(dvsParseOnOff(msg));
@@ -222,7 +254,18 @@ static bool mqttConnect() {
 		s_mqtt.subscribe(MQTT_TOPIC_PROFILE_SET);
 		s_mqtt.subscribe(MQTT_TOPIC_MOISTURE_SET);
         publishDiscovery();
-        netPublishState();
+        if (!s_restoreDone) {
+            // First connect after boot: read the retained settings back before
+            // publishing our own (default) state over the top of them.
+            s_mqtt.subscribe(MQTT_TOPIC_MODE_STATE);
+            s_mqtt.subscribe(MQTT_TOPIC_PROFILE_STATE);
+            s_mqtt.subscribe(MQTT_TOPIC_TX_STATE);
+            s_mqtt.subscribe(MQTT_TOPIC_MOISTURE_STATE);
+            s_restoreActive = true;
+            s_restoreDeadline = millis() + DVS_MQTT_RESTORE_WINDOW_MS;
+        } else {
+            netPublishState();
+        }
     } else {
         Serial.printf("failed rc=%d\n", s_mqtt.state());
     }
@@ -272,6 +315,18 @@ void netLoop() {
     }
 
     s_mqtt.loop();
+
+    if (s_restoreActive && (int32_t)(now - s_restoreDeadline) >= 0) {
+        // Restore window elapsed: stop listening to our own state topics, then
+        // publish the restored (or default) state once more without loopback.
+        s_restoreActive = false;
+        s_restoreDone = true;
+        s_mqtt.unsubscribe(MQTT_TOPIC_MODE_STATE);
+        s_mqtt.unsubscribe(MQTT_TOPIC_PROFILE_STATE);
+        s_mqtt.unsubscribe(MQTT_TOPIC_TX_STATE);
+        s_mqtt.unsubscribe(MQTT_TOPIC_MOISTURE_STATE);
+        netPublishState();
+    }
 
     if (now - s_lastStatePublish >= STATE_PUBLISH_MS) {
         s_lastStatePublish = now;

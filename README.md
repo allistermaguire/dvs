@@ -241,8 +241,74 @@ live data:
 | `on`          | Power the fan on (last used / default speed) – transmits        |
 | `off`         | Power the fan off (stop) – transmits                            |
 | `speed <n>`   | Set target fan speed `0..84` – transmits                        |
-| `status`      | Print the current configuration                                 |
-| `help`        | List commands                                                   |
+| `mode <manual|auto>` | Manual control vs. automatic summer/winter profiles |
+| `profile <summer|winter|auto>` | Select the ventilation profile (`auto` picks by inside temp) |
+| `moisture [on|off]` | Winter moisture-floor ventilation on/off/toggle |
+| `inside <°C>` | Feed the inside temperature used by auto control |
+| `status` | Print the current configuration (incl. mode/profile/inside) |
+| `help` | List commands |
+
+## Automatic ventilation profiles
+
+Beyond manual control, the firmware can drive the fan itself from temperature —
+an on-device **summer/winter profile controller**. The decision logic is pure and
+host-tested (see [`include/profile.h`](include/profile.h) /
+[`src/profile.cpp`](src/profile.cpp)). This unit is positive-pressure roof air
+with **no heat-recovery core**, so the air entering the house is the **raw roof
+temperature** — the profiles work directly on `roof` vs `inside`, with no
+tempering blend.
+
+**Inputs.** Roof temperature is the sniffed `0x10` reading. The in-home
+temperature is **not on the bus**, so you feed it in over MQTT
+(`dvs/inside_temp/set`, e.g. from a Home Assistant sensor) or with `inside <°C>`
+on the console.
+
+**Profiles.**
+
+- **Winter (moisture-first)** — keeps a trickle of ventilation for
+  moisture/condensation control whenever the roof air is above the cold cutoff
+  (`minSupply`), *even when it is not adding heat*; adds a proportional speed
+  boost on top when the roof is warmer than inside. Cuts off below `minSupply`,
+  or once the house is already warm (`comfortHigh`).
+- **Summer (free cooling)** — ventilates when the roof/night air is cooler than
+  inside; blocks hot midday roof air above `maxSupply`, and stops once the house
+  is already cool (`comfortLow`).
+- **Auto** — picks summer or winter each tick from the inside temperature
+  (around `comfortTarget`), for the shoulder seasons. You can instead force the
+  profile from a Home Assistant seasonal automation.
+
+**Engaging it.** Auto control only drives the fan when **all** of these hold:
+
+1. `mode auto` — the default is `manual`, and *selecting a profile alone does
+   nothing*;
+2. `tx on` — in listen-only the controller is inert and the fan is left to the
+   wall controller; and
+3. a **fresh** inside temperature (and roof temperature) — if either is older
+   than `DVS_TEMP_STALE_MS` the controller **fails safe to off**.
+
+It recomputes every `DVS_CONTROL_TICK_MS`. Example: `winter` at roof 7 °C (below
+the 12 °C floor) commands the fan **off**; above 12 °C the moisture floor holds
+`minSpeed`, climbing proportionally as the roof rises past the inside temperature.
+
+**Setpoints** (boot defaults tuned for Wellington NZ; all in
+[`include/config.h`](include/config.h) and tunable live over MQTT/console):
+
+| Setting | Default | Meaning |
+| -------- | -------: | -------- |
+| `DVS_PROFILE_COMFORT_TARGET_C` | 19 | `auto` summer/winter switch point |
+| `DVS_PROFILE_COMFORT_HIGH_C` | 21 | Winter: stop once inside is this warm |
+| `DVS_PROFILE_COMFORT_LOW_C` | 18 | Summer: stop once inside is this cool |
+| `DVS_PROFILE_MIN_SUPPLY_C` | 12 | Winter: never supply roof air colder than this |
+| `DVS_PROFILE_MAX_SUPPLY_C` | 24 | Summer: never supply roof air hotter than this |
+| `DVS_PROFILE_DEADBAND_ON_C` / `_OFF_C` | 1.5 / 0.5 | Start / stop hysteresis |
+| `DVS_PROFILE_SPAN_C` | 5 | Differential at which speed reaches max |
+| `DVS_PROFILE_MIN_SPEED` / `_MAX_SPEED` | 12 / 84 | Proportional speed range |
+| `DVS_MOISTURE_FLOOR_DEFAULT` | on | Winter moisture-floor ventilation |
+
+> The **Control model** section above describes the *original wall controller*
+> (Winter/Summer/Uniform/General, Retain Home Heat ON/OFF, airflow offset) as
+> reverse-engineered from captures — it is background, not what this firmware's
+> `auto` mode implements.
 
 ## Wi-Fi & MQTT control
 

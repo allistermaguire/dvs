@@ -167,6 +167,10 @@ static constexpr uint32_t MQTT_RECONNECT_MS = 5000;  // retry broker connect cad
 // immediate publish whenever a command is applied. Keeps retained topics fresh
 // for clients that (re)connect between commands.
 static constexpr uint32_t STATE_PUBLISH_MS  = 15000; // periodic state republish
+// On the first broker connect after boot, how long to wait for the retained
+// */state topics to arrive so mode/profile/tx/moisture can be restored before
+// the firmware resumes publishing its own state.
+static constexpr uint32_t DVS_MQTT_RESTORE_WINDOW_MS = 1500;
 
 // --- MQTT topics --------------------------------------------------------------
 // Broker/credentials live in secrets.h; the topic tree is fixed here.
