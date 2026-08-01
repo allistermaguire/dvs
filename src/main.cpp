@@ -3,17 +3,21 @@
 // Listens (RX only) on the DVS bus in parallel with the existing controller,
 // groups bytes into frames by inter-frame idle gaps, verifies the CRC and prints
 // a decoded summary of every frame to the USB serial console. A small line-based
-// command interface allows changing the bus baud rate, gap threshold and CRC
-// variant at runtime to help work out the protocol from live captures.
+// command interface allows changing the frame gap threshold and toggling display
+// and transmit options at runtime. Fan control and the auto-ventilation policy
+// live in control.cpp; this file owns the RS485 transceiver and the frame
+// sniffer/decoder, and provides the bus seam (bus.h) the control layer calls.
 
 #if !defined(UNIT_TEST)
 
 #include <Arduino.h>
 
+#include "bus.h"
 #include "config.h"
 #include "control.h"
 #include "frame.h"
 #include "net.h"
+#include "parse.h"
 
 // --- Runtime-adjustable state ------------------------------------------------
 static uint32_t g_gapThresholdUs = DEFAULT_GAP_THRESHOLD_US;
@@ -25,25 +29,6 @@ static uint32_t g_badFrameCount = 0; // running total of CRC=BAD frames seen
 // reverse-engineered; no longer console-adjustable.
 static const Crc16Params g_crcParams;        // CRC-16/AUG-CCITT (init 0x1D0F)
 static constexpr bool g_crcBigEndian = true; // CRC transmitted MSB first
-
-// --- Fan control state (commanded, i.e. what we last told the fan) -----------
-static bool g_txEnabled = DVS_TX_ENABLED_DEFAULT; // false => listen-only
-static bool g_fanPower = false;         // true while we intend the fan to run
-static uint8_t g_fanSpeed = 0;          // last commanded target speed (0..84)
-static uint8_t g_lastNonZeroSpeed = 0;  // remembered speed for a bare "power on"
-
-// --- Auto ventilation control state -----------------------------------------
-static DvsControlMode g_controlMode = DVS_MODE_MANUAL;   // manual vs auto profile
-static DvsProfileSel g_profileSel = DVS_PROFILE_SEL_AUTO; // summer/winter/auto
-static DvsProfile g_effectiveProfile = DVS_PROFILE_WINTER; // AUTO resolved value
-static bool g_moistureFloor = DVS_MOISTURE_FLOOR_DEFAULT;   // winter moisture vent
-static float g_insideTempC = 0.0f;           // last inside temp fed in (MQTT)
-static bool g_haveInsideTemp = false;
-static uint32_t g_insideTempMs = 0;          // millis() of the last inside-temp update
-static float g_roofTempC = 0.0f;             // last roof temp sniffed from the bus
-static bool g_haveRoofTemp = false;
-static uint32_t g_roofTempMs = 0;            // millis() of the last roof-temp reading
-static uint32_t g_lastControlTickMs = 0;     // last auto-tick time (0 => act now)
 
 // --- Transmit-mode poll cycle state ---
 static uint8_t g_pollReg = REG_FAN_SPEED; // register of the in-flight transaction
@@ -79,12 +64,12 @@ static void busTransmit(const uint8_t *bytes, size_t len) {
     applyEnable();                       // back to the configured listen level
 }
 
-// Build and transmit a command frame addressed to the fan.
-static void sendCommandFrame(uint8_t reg, const uint8_t *payload, size_t payloadLen) {
+// Build and transmit a command frame addressed to the fan (bus.h seam).
+void dvsBusSend(uint8_t reg, const uint8_t *payload, size_t payloadLen) {
     // Single hard chokepoint: never drive the bus while in listen-only mode,
-    // regardless of caller. This guarantees the passive-sniffer guarantee even
+    // regardless of caller. This perserves the passive-sniffer guarantee even
     // if some other path (e.g. the keepalive) sets the fan "on".
-    if (!g_txEnabled) {
+    if (!dvsControlGetTxEnabled()) {
         return;
     }
     uint8_t buf[MAX_FRAME_LEN];
@@ -118,226 +103,30 @@ static void sendCommandFrame(uint8_t reg, const uint8_t *payload, size_t payload
     }
 }
 
-// --- Fan control API (declared in control.h) ----------------------------------
-void dvsControlSetSpeed(uint8_t speed) {
-    if (!g_txEnabled) {
-        Serial.println(F("[warn] listen-only: speed command ignored (tx off)"));
-        return;
-    }
-    if (speed > DVS_MAX_SPEED) {
-        speed = DVS_MAX_SPEED;
-    }
-    if (speed == 0) {
-        dvsControlSetPower(false);
-        return;
-    }
-    g_fanSpeed = speed;
-    g_lastNonZeroSpeed = speed;
-    g_fanPower = true;
-    sendCommandFrame(REG_FAN_SPEED, &speed, 1);
-}
-
-void dvsControlSetPower(bool on) {
-    if (!g_txEnabled) {
-        Serial.println(F("[warn] listen-only: power command ignored (tx off)"));
-        return;
-    }
-    if (on) {
-        const uint8_t s = g_lastNonZeroSpeed ? g_lastNonZeroSpeed : DVS_DEFAULT_SPEED;
-        dvsControlSetSpeed(s); // sets state + transmits the speed
-    } else {
-        // "Off" matches the wall controller: write fan-speed target 0 (there is
-        // no separate stop register in captures). Send one explicit 0 now for an
-        // immediate response; the poll cycle then keeps re-writing the target
-        // (now 0) at the controller cadence rather than going silent - on/off is
-        // expressed purely through the target value the keepalive re-sends, not
-        // by starting/stopping the transmit.
-        g_fanPower = false;
-        g_fanSpeed = 0;
-        const uint8_t zero = 0;
-        sendCommandFrame(REG_FAN_SPEED, &zero, 1);
-    }
-}
-
-bool dvsControlGetPower() { return g_fanPower; }
-uint8_t dvsControlGetSpeed() { return g_fanSpeed; }
-
-void dvsControlSetTxEnabled(bool enabled) {
-    if (g_txEnabled == enabled) {
-        return;
-    }
-    g_txEnabled = enabled;
-    if (!enabled) {
-        // Dropping to listen-only: forget any "on" intent so the keepalive loop
-        // goes quiet. We do NOT transmit anything here - listen-only is silent.
-        g_fanPower = false;
-        g_fanSpeed = 0;
-    } else {
-        // Resuming transmit: restart the poll cycle cleanly on the 0x15 write so
-        // stale in-flight state can't cause an immediate timeout.
-        g_pollActive = false;
-        g_pollReg = REG_FAN_SPEED;
-        g_pollGapUntilMs = 0;
-    }
-    Serial.printf("[ok] tx=%s (%s)\n", g_txEnabled ? "on" : "off",
-                    g_txEnabled ? "listen+send" : "listen-only");
-}
-
-bool dvsControlGetTxEnabled() { return g_txEnabled; }
-
-void dvsControlReportObserved(uint8_t targetSpeed) {
-    // Mirror a target speed seen on the bus into the reported state, without
-    // transmitting or touching the keepalive. Used in listen-only mode so the
-    // HA fan entity tracks the real fan (driven by the wall controller).
-    g_fanSpeed = targetSpeed;
-    g_fanPower = (targetSpeed > 0);
-    if (targetSpeed > 0) {
-        g_lastNonZeroSpeed = targetSpeed;
-    }
-}
-
-// --- Auto ventilation control (declared in control.h) -----------------------
-void dvsControlSetMode(DvsControlMode mode) {
-    if (g_controlMode == mode) {
-        return;
-    }
-    g_controlMode = mode;
-    g_lastControlTickMs = 0; // recompute on the next loop iteration
-    Serial.printf("[ok] mode=%s\n", mode == DVS_MODE_AUTO ? "auto" : "manual");
-}
-DvsControlMode dvsControlGetMode() { return g_controlMode; }
-
-void dvsControlSetProfile(DvsProfileSel sel) {
-    g_profileSel = sel;
-    // Resolve the effective profile now so state reports are immediately correct.
-    switch (sel) {
-    case DVS_PROFILE_SEL_SUMMER:
-        g_effectiveProfile = DVS_PROFILE_SUMMER;
-        break;
-    case DVS_PROFILE_SEL_WINTER:
-        g_effectiveProfile = DVS_PROFILE_WINTER;
-        break;
-    default:
-        if (g_haveInsideTemp) {
-            g_effectiveProfile = dvsProfileAuto(
-                g_insideTempC, DVS_PROFILE_COMFORT_TARGET_C, g_effectiveProfile);
-        }
-        break;
-    }
-    g_lastControlTickMs = 0; // act on the change promptly
-}
-DvsProfileSel dvsControlGetProfile() { return g_profileSel; }
-DvsProfile dvsControlGetEffectiveProfile() { return g_effectiveProfile; }
-
-void dvsControlSetMoistureFloor(bool on) { g_moistureFloor = on; }
-bool dvsControlGetMoistureFloor() { return g_moistureFloor; }
-
-void dvsControlSetInsideTemp(float celsius) {
-    g_insideTempC = celsius;
-    g_haveInsideTemp = true;
-    g_insideTempMs = millis();
-}
-bool dvsControlGetInsideTemp(float *celsius) {
-    if (!g_haveInsideTemp) {
-        return false;
-    }
-    if (celsius) {
-        *celsius = g_insideTempC;
-    }
-    return true;
-}
-
-// Resolve the profile in effect for this tick (AUTO -> summer/winter by inside
-// temp, with hysteresis inside dvsProfileAuto).
-static DvsProfile controlResolveProfile() {
-    switch (g_profileSel) {
-    case DVS_PROFILE_SEL_SUMMER:
-        return DVS_PROFILE_SUMMER;
-    case DVS_PROFILE_SEL_WINTER:
-        return DVS_PROFILE_WINTER;
-    default:
-        return dvsProfileAuto(g_insideTempC, DVS_PROFILE_COMFORT_TARGET_C,
-                              g_effectiveProfile);
-    }
-}
-
-void dvsControlAutoTick() {
-    if (g_controlMode != DVS_MODE_AUTO) {
-        return;
-    }
-    const uint32_t nowMs = millis();
-    if (g_lastControlTickMs != 0 &&
-        (nowMs - g_lastControlTickMs) < DVS_CONTROL_TICK_MS) {
-        return;
-    }
-    g_lastControlTickMs = nowMs;
-
-    // Listen-only stays silent; the sendCommandFrame chokepoint guards too.
-    if (!g_txEnabled) {
-        return;
-    }
-
-    // Fail safe: a stale/absent roof or inside reading must not hold the fan on.
-    const bool roofFresh =
-        g_haveRoofTemp && (nowMs - g_roofTempMs) < DVS_TEMP_STALE_MS;
-    const bool insideFresh =
-        g_haveInsideTemp && (nowMs - g_insideTempMs) < DVS_TEMP_STALE_MS;
-    if (!roofFresh || !insideFresh) {
-        if (dvsControlGetPower()) {
-            dvsControlSetPower(false);
-            netPublishState();
-            Serial.println(F("[auto] temp stale -> fan off (fail-safe)"));
-        }
-        return;
-    }
-
-    g_effectiveProfile = controlResolveProfile();
-
-    DvsProfileInputs in;
-    in.roofTempC = g_roofTempC;
-    in.insideTempC = g_insideTempC;
-    in.moistureFloor = g_moistureFloor;
-    in.profile = g_effectiveProfile;
-
-    DvsProfileConfig cfg;
-    cfg.deadbandOnC = DVS_PROFILE_DEADBAND_ON_C;
-    cfg.deadbandOffC = DVS_PROFILE_DEADBAND_OFF_C;
-    cfg.spanC = DVS_PROFILE_SPAN_C;
-    cfg.comfortHighC = DVS_PROFILE_COMFORT_HIGH_C;
-    cfg.comfortLowC = DVS_PROFILE_COMFORT_LOW_C;
-    cfg.minSupplyC = DVS_PROFILE_MIN_SUPPLY_C;
-    cfg.maxSupplyC = DVS_PROFILE_MAX_SUPPLY_C;
-    cfg.minSpeed = DVS_PROFILE_MIN_SPEED;
-    cfg.maxSpeed = DVS_PROFILE_MAX_SPEED;
-
-    const uint8_t target = dvsProfileSpeed(in, cfg, g_fanSpeed);
-    if (target == 0) {
-        if (dvsControlGetPower()) {
-            dvsControlSetPower(false);
-            netPublishState();
-        }
-    } else if (target != g_fanSpeed || !dvsControlGetPower()) {
-        dvsControlSetSpeed(target);
-        netPublishState();
-    }
-}
+// Fan control + auto ventilation now lines in control.cpp (the policy layer).
+// This file provides the bus seam (dvsBusSend above, dvsBusResetPollCycle below)
+// that they call into.
 
 static void printConfig() {
     Serial.printf(
         "[cfg] gapUs=%lu decode=%s tx=%s pins(RX=%d TX=%d DE/RE=%d)\n",
         (unsigned long)g_gapThresholdUs, g_decode ? "on" : "off",
-        g_txEnabled ? "send" : "listen", RS485_RX_PIN, RS485_TX_PIN,
+        dvsControlGetTxEnabled() ? "send" : "listen", RS485_RX_PIN, RS485_TX_PIN,
         RS485_DE_RE_PIN);
     Serial.printf("[cfg] badonly=%s badCount=%lu\n", g_badOnly ? "on" : "off",
                   (unsigned long)g_badFrameCount);
-    const char *profStr = (g_profileSel == DVS_PROFILE_SEL_SUMMER) ? "summer"
-                        : (g_profileSel == DVS_PROFILE_SEL_WINTER) ? "winter"
-                                                                   :  "auto";
+    const DvsControlMode sel = dvsControlGetMode();
+    const char *profStr = (sel == DVS_PROFILE_SEL_SUMMER) ? "summer"
+                        : (sel == DVS_PROFILE_SEL_WINTER) ? "winter"
+                                                          : "auto";
+    float inside;
+    const bool haveInside = dvsControlGetInsideTemp(&inside);
     Serial.printf("[cfg] mode=%s profile=%s(->%s) moisture=%s inside=%s\n",
-                  g_controlMode == DVS_MODE_AUTO ? "auto" : "manual", profStr,
-                  g_effectiveProfile == DVS_PROFILE_SUMMER ? "summer" : "winter",
-                  g_moistureFloor ? "on" : "off",
-                  g_haveInsideTemp ? String(g_insideTempC, 1).c_str() : "n/a");
+                  dvsControlGetMode() == DVS_MODE_AUTO ? "auto" : "manual", profStr,
+                  dvsControlGetEffectiveProfile() == DVS_PROFILE_SUMMER ? "summer"
+                                                                        : "winter",
+                  dvsControlGetMoistureFloor() ? "on" : "off",
+                  haveInside ? String(inside, 1).c_str() : "n/a");
 }
 
 static void printHelp() {
@@ -387,9 +176,7 @@ static void publishObserved(const DvsFrame &f) {
         const float tc = dvs_temp_c_from_raw((int)raw);
         // Cache every reading (not just published ones) so the auto-control tick
         // has a fresh roof (supply) temperature and can judge staleness.
-        g_roofTempC = tc;
-        g_roofTempMs = millis();
-        g_haveRoofTemp = true;
+        dvsControlReportRoofTemp(tc);
         if ((int)raw != lastTempRaw) {
             // Only advance the dedupe cache once the value is actually sent,
             // so values seen before MQTT connects are not lost.
@@ -521,31 +308,30 @@ static void handleCommand(const String &raw) {
     } else if (cmd.startsWith("badonly")) {
         String arg = cmd.substring(7);
         arg.trim();
-        if (arg == "on" || arg == "1") {
-            g_badOnly = true;
-        } else if (arg == "off" || arg == "0") {
-            g_badOnly = false;
-        } else if (arg == "reset") {
+        if (arg == "reset") {
             g_badFrameCount = 0;
-        } else if (arg.isEmpty()) {
-            g_badOnly = !g_badOnly; // bare `badonly` toggles
         } else {
-            Serial.println(F("[err] usage: badonly [on|off|reset]"));
-            return;
+            switch (dvsParseTriState(arg.c_str())) {
+                case DVS_TRI_ON: g_badOnly = true; break;
+                case DVS_TRI_OFF: g_badOnly = false; break;
+                case DVS_TRI_TOGGLE: g_badOnly = !g_badOnly; break;
+                default:
+                    Serial.println(F("[err] usage: badonly [on|off|reset]"));
+                    return;
+            }
         }
         Serial.printf("[ok] badonly=%s badCount=%lu\n", g_badOnly ? "on" : "off",
                     (unsigned long)g_badFrameCount);
     } else if (cmd.startsWith("tx")) {
         String arg = cmd.substring(2);
         arg.trim();
-        if (arg == "on" || arg == "send" || arg == "1") {
-            dvsControlSetTxEnabled(true);
-        } else if (arg == "off" || arg == "listen" || arg == "0") {
-            dvsControlSetTxEnabled(false);
-        } else if (arg.isEmpty()) {
-            dvsControlSetTxEnabled(!dvsControlGetTxEnabled()); // bare `tx` toggles
-        } else {
-            Serial.println(F("[err] usage: tx [on|off]"));
+        switch (dvsParseTriState(arg.c_str())) {
+            case DVS_TRI_ON: dvsControlSetTxEnabled(true); break;
+            case DVS_TRI_OFF: dvsControlSetTxEnabled(false); break;
+            case DVS_TRI_TOGGLE:
+                dvsControlSetTxEnabled(!dvsControlGetTxEnabled());
+                break;
+            default: Serial.println(F("[err] usage: tx [on|off]")); break;
         }
     } else if (cmd == "on") {
         dvsControlSetPower(true);
@@ -588,15 +374,15 @@ static void handleCommand(const String &raw) {
     } else if (cmd.startsWith("moisture")) {
         String arg = cmd.substring(8);
         arg.trim();
-        if (arg == "on" || arg == "1") {
-            dvsControlSetMoistureFloor(true);
-        } else if (arg == "off" || arg == "0") {
-            dvsControlSetMoistureFloor(false);
-        } else if (arg.isEmpty()) {
-            dvsControlSetMoistureFloor(!dvsControlGetMoistureFloor());
-        } else {
-            Serial.println(F("[err] usage: moisture [on|off]"));
-            return;
+        switch (dvsParseTriState(arg.c_str())) {
+            case DVS_TRI_ON: dvsControlSetMoistureFloor(true); break;
+            case DVS_TRI_OFF: dvsControlSetMoistureFloor(false); break;
+            case DVS_TRI_TOGGLE:
+                dvsControlSetMoistureFloor(!dvsControlGetMoistureFloor());
+                break;
+            default:
+                Serial.println(F("[err] usage: moisture [on|off]"));
+                return;
         }
         Serial.printf("[ok] moisture=%s\n",
                       dvsControlGetMoistureFloor() ? "on" : "off");
@@ -652,13 +438,22 @@ void setup() {
     netSetup();
 }
 
+// Restart the transmit poll cycle cleanly (bus.h seam; called when transmit is
+// re-enabled so stale in-flight state can't cause an immediate timeout).
+void dvsBusResetPollCycle() {
+    g_pollActive = false;
+    g_pollReg = REG_FAN_SPEED;
+    g_pollGapUntilMs = 0;
+}
+
 // --- Option 2: response-driven poll cycle ------------------------------------
 // Send the request for the current transaction's register.
 static void pollSendRequest() {
     if (g_pollReg == REG_TEMP) {
-        sendCommandFrame(REG_TEMP, nullptr, 0);          // roof-temperature query
+        dvsBusSend(REG_TEMP, nullptr, 0);           // roof-temperature query
     } else {
-        sendCommandFrame(REG_FAN_SPEED, &g_fanSpeed, 1); // speed target / keepalive
+        const uint8_t sp = dvsControlGetSpeed();
+        dvsBusSend(REG_FAN_SPEED, &sp, 1);          // speed target / keepalive
     }
 }
 
@@ -742,8 +537,8 @@ void loop() {
     // Drive the transmit-mode poll cycle: a response-driven 1:1 alternation of
     // the 0x15 keepalive and the 0x10 temperature read (see pollCycleStep /
     // config.h). tx-only: listen-only stays silent even though observed-state
-    // mirroring can set g_fanPower (sendCommandFrame guards it as well).
-    if (g_txEnabled) {
+    // mirroring can report the fan as "on" (dvsBusSend guards the bus as well).
+    if (dvsControlGetTxEnabled()) {
         pollCycleStep();
     }
 

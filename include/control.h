@@ -72,6 +72,10 @@ void dvsControlSetInsideTemp(float celsius);
 // Latest inside temperature. Returns false if none has ever been received.
 bool dvsControlGetInsideTemp(float *celsius);
 
+// Feed the roof (supply) temperature sniffed from the bus (deg C). Records the
+// value and a freshness timestamp for the auto-control fail-safe.
+void dvsControlReportRoofTemp(float celsius);
+
 // Run one non-blocking step of the auto-control loop. Call from loop(); it only
 // acts on its own DVS_CONTROL_TICK_MS cadence and only in auto mode.
 void dvsControlAutoTick();

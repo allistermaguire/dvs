@@ -15,6 +15,7 @@
 #include "config.h"
 #include "control.h"
 #include "net.h"
+#include "parse.h"
 #include "secrets.h"
 
 static WiFiClientSecure s_wifiClient;
@@ -53,12 +54,6 @@ void netPublishState() {
     }
 }
 
-// Parse a truthy ON/1/true payload (case-insensitive).
-static bool parseOnOff(const char *msg) {
-    return (strcasecmp(msg, "ON") == 0) || (strcasecmp(msg, "true") == 0) ||
-           (strcmp(msg, "1") == 0);
-}
-
 // Incoming command dispatch. Payloads are small (ON/OFF or a number), so a tiny
 // stack buffer is enough.
 static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
@@ -68,10 +63,10 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
     msg[n] = '\0';
 
     if (strcmp(topic, MQTT_TOPIC_TX_SET) == 0) {
-        dvsControlSetTxEnabled(parseOnOff(msg));
+        dvsControlSetTxEnabled(dvsParseOnOff(msg));
         netPublishState();
     } else if (strcmp(topic, MQTT_TOPIC_POWER_SET) == 0) {
-        dvsControlSetPower(parseOnOff(msg));
+        dvsControlSetPower(dvsParseOnOff(msg));
         netPublishState();
     } else if (strcmp(topic, MQTT_TOPIC_SPEED_SET) == 0) {
         int v = atoi(msg);
@@ -99,7 +94,7 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
 		}
 		netPublishState();
 	} else if (strcmp(topic, MQTT_TOPIC_MOISTURE_SET) == 0) {
-		dvsControlSetMoistureFloor(parseOnOff(msg));
+		dvsControlSetMoistureFloor(dvsParseOnOff(msg));
 		netPublishState();
 	}
 }

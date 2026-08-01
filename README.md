@@ -175,17 +175,23 @@ include/
   config.h                 Pins, baud, gap threshold, register + control table, MQTT topics
   crc16.h                  CRC16-CCITT API
   frame.h                  Frame struct, CRC verify, decode + formatter, frame builder
-  control.h                Fan control API (power / speed)
+  control.h                Fan control + auto-ventilation API
+  bus.h                    RS485 transmit seam (dvsBusSend / poll-cycle reset)
+  parse.h                  Shared on/off/toggle argument parser (console + MQTT)
+  profile.h                Pure sumer/winter speed-vs-temperature logic
   net.h                    Wi-Fi = MQTT bridge API
   secrets.h                Wi-Fi / MQTT credentials (git-ignored; copy the .example)
   secrets.h.example        Template for secrets.h
 src/
   crc16.cpp                CRC implementation (switchable variant)
   frame.cpp                Frame decoding / line formatting / frame building
+  profile.cpp              Ventilation profile maths (pure, host-tested)
+  control.cppp             Fan control + auto-ventilation policy (Arduino only)
   net.cpp                  Wi-Fi + MQTT client (esp32 only)
-  main.cpp                 Sniffer loop + USB console + RS485 transmit/control (Arduino only)
+  main.cpp                 Sniffer loop + USB console + RS485 bus/transmit (Arduino only)
 test/
   test_crc/test_crc.cpp    Host-side unit tests (Unity)
+  test_profile/test_profile.cpp Host-side profile-logic tests (Unity)
 ```
 
 ## Building & flashing
