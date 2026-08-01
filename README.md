@@ -4,21 +4,27 @@ Passive RS485 bus sniffer for a **DVS G3 (DVS-G3 BC220)** home ventilation syste
 built on a **D1 Mini ESP32** and a **MAX3485** transceiver.
 
 It listens (receive-only) on the DVS bus *in parallel with the existing wall
-controller*, groups the serial bytes into frames, verifies the CRC and prints a
-decoded summary of every frame over USB. It can also **connect to Wi-Fi and MQTT**
-to expose the fan as a controllable device - turn it on/off and set the fan speed
-- while publishing the sniffed roof-space temperature and actual fan speed.
+controller*, groups the serial bytes into frames and verifies the CRC. It can
+decode every frame to the USB console for debugging (off by default — see
+`trace` below), and **connect to Wi-Fi and MQTT** to expose the fan as a
+controllable device — turn it on/off, set the fan speed, or hand control to an
+on-device summer/winter profile — while publishing the sniffed roof-space
+temperature and actual fan speed.
 
 Protocol work is based on Ian Rees' write-up,
-[*Reverse engineering the DVS bus*](https://ianrees.nz/tech/2018-07-11-reverse-engineering-the-dvs-bus.html).
+[*Reverse engineering the DVS bus*](https://ianrees.nz/tech/2018-07-11-reverse-engineering-the-dvs-bus.html)
 
-> **Status:** listen-only sniffer + decoder, plus an **experimental control path**
-> (Wi-Fi + MQTT) that transmits on the bus to command power and fan speed.
+> **Status:** the bus protocol is reverse-engineered and the control path is
+> **confirmed working on hardware** — the ESP32 drives fan power/speed over MQTT
+> and runs the summer/winter auto-ventilation controller. The firmware runs
+> quiet by default (per-frame tracing off; lifecycle/error logs and MQTT stay
+> on).
 >
-> ⚠️ **Transmitting is active and shares the bus with the wall controller.** Frame
-> collisions are possible and the exact payloads for some registers (deadman, stop)
-> are still inferred, not confirmed. Only enable control on a system you can
-> recover, and keep the wall controller handy. The sniffer half remains passive.
+> ⚠️ **Transmitting is active and shares the bus with the wall controller.**
+> Frame collisions are still possible. Transmit is **off by default**
+> (listen-only); only enable control on a system you can recover, and keep the
+> wall controller handy. In listen-only mode the firmware is a pure passive
+> sniffer and never drives the bus.
 
 ## The DVS bus protocol
 
@@ -62,10 +68,10 @@ counter-intuitive** - verified by multimeter on one unit:
 
 | Register | Meaning                                                          |
 | -------- | ---------------------------------------------------------------- |
-| `0x03`   | Deadman - write occasionally to keep the fan spinning            |
+| `0x03`   | Deadman (per Ian Rees) - **not observed** in live control captures; this firmware does not use |
 | `0x04`   | Set address - one payload byte becomes the peripheral address    |
-| `0x05`   | Stop                                                             |
-| `0x10`   | Roof-space temperature - payload byte 0 is a raw count; linear over 11-20 °C `temp_C = 0.06807·raw - 1.039` (≈14.7 counts/ °C) |
+| `0x05`   | Stop (per Ian Rees) - **not observed**; "off" is really speed 0 via `0x15` |
+| `0x10`   | Roof-space temperature - raw count is **little-endian across the payload** (exceeds one byte above ~16 °C); linear over 11-20 °C: `temp_C = 0.06807 * raw - 1.039` (≈14.7 counts/°C) |
 | `0x15`   | Fan speed - 1-byte payload = commanded/target (steps instantly on switch-on), 2-byte payload = actual speed (ramps up, soft-start) |
 
 ## Control model
@@ -100,11 +106,12 @@ reading. The **in-home** sensor is wired directly to the wall controller and rea
 locally, so it never appears on RS485. The two sensors are therefore reported by
 different means, not two bus registers.
 
-**Temperature scaling.** Payload byte 0 of `0x10` is a raw roof-space sensor
-count. A least-squares fit to 8 live points over 11–20 °C is linear (residuals
-< 0.75 °C, limited by the controller's integer display):
-`temp_C = 0.06807·raw - 1.039` (≈ 14.7 counts/°C). Readings at temperature
-extremes are still needed to confirm the fit holds outside that range.
+**Temperature scaling.** The `0x10` payload is a raw roof-space sensor count read
+**little-endian across the payload** (above ~16 °C it exceeds one byte, so byte 0
+alone wraps - read the whole payload). A least-squares fit to 8 live points over
+11-20 °C is linear (residuals < 0.75 °C, limited by the controller's integer
+display): `temp_C = 0.06807 * raw - 1.039` (≈ 14.7 counts/°C). Readings at
+temperature extremes are still needed to confirm the fit holds outside that range.
 
 **Fan-speed map (measured).** Fan speed (`0x15`) runs **0 (off) to 84 (max/boost,
 all profiles)**. Sweeping profile × airflow offset × heat-recovery gives the
@@ -170,28 +177,29 @@ Pin assignments live in [`include/config.h`](include/config.h).
 ## Project layout
 
 ```
-platformio.ini             PlatformIO envs: esp32dev (firmware) + native (tests)
+platformio.ini                  PlatformIO envs: esp32dev (firmware) + native (tests)
 include/
-  config.h                 Pins, baud, gap threshold, register + control table, MQTT topics
-  crc16.h                  CRC16-CCITT API
-  frame.h                  Frame struct, CRC verify, decode + formatter, frame builder
-  control.h                Fan control + auto-ventilation API
-  bus.h                    RS485 transmit seam (dvsBusSend / poll-cycle reset)
-  parse.h                  Shared on/off/toggle argument parser (console + MQTT)
-  profile.h                Pure sumer/winter speed-vs-temperature logic
-  net.h                    Wi-Fi = MQTT bridge API
-  secrets.h                Wi-Fi / MQTT credentials (git-ignored; copy the .example)
-  secrets.h.example        Template for secrets.h
+  config.h                      Pins, baud, gap threshold, register + control table, MQTT topics
+  crc16.h                       CRC16-CCITT API
+  frame.h                       Frame struct, CRC verify, decode + formatter, frame builder
+  control.h                     Fan control + auto-ventilation API
+  bus.h                         RS485 transmit seam (dvsBusSend / poll-cycle reset)
+  parse.h                       Shared argument parsers: on/off/toggle + strict numeric/mode/profile (console + MQTT)
+  profile.h                     Pure summer/winter speed-vs-temperature logic + fail-safe freshness gate
+  net.h                         Wi-Fi = MQTT bridge API
+  secrets.h                     Wi-Fi / MQTT credentials (git-ignored; copy the .example)
+  secrets.h.example             Template for secrets.h
 src/
-  crc16.cpp                CRC implementation (switchable variant)
-  frame.cpp                Frame decoding / line formatting / frame building
-  profile.cpp              Ventilation profile maths (pure, host-tested)
-  control.cppp             Fan control + auto-ventilation policy (Arduino only)
-  net.cpp                  Wi-Fi + MQTT client (esp32 only)
-  main.cpp                 Sniffer loop + USB console + RS485 bus/transmit (Arduino only)
+  crc16.cpp                     CRC implementation (switchable variant)
+  frame.cpp                     Frame decoding / line formatting / frame building
+  profile.cpp                   Ventilation profile maths (pure, host-tested)
+  control.cppp                  Fan control + auto-ventilation policy (Arduino only)
+  net.cpp                       Wi-Fi + MQTT client (esp32 only)
+  main.cpp                      Sniffer loop + USB console + RS485 bus/transmit (Arduino only)
 test/
-  test_crc/test_crc.cpp    Host-side unit tests (Unity)
-  test_profile/test_profile.cpp Host-side profile-logic tests (Unity)
+  test_crc/test_crc.cpp         Host-side CRC unit tests (Unity)
+  test_profile/test_profile.cpp Host-side profile-logic + fail-safe tests (Unity)
+  test_parse/test_parse.cpp     Host-side argument-parser tests (Unity)
 ```
 
 ## Building & flashing
@@ -200,7 +208,7 @@ PlatformIO does the work on a machine that has it installed (this project is
 authored without a local toolchain).
 
 ```sh
-# Run the host-side CRC / frame tests - no hardware needed
+# Run the host-side unit tests (CRC, frame, profile, parsers) - no hardware needed
 pio test -e native
 
 # Provide Wi-Fi + MQTT credentials (git-ignored) before building the firmware
@@ -211,14 +219,17 @@ cp include/secrets.h.example include/secrets.h
 pio run
 pio run -t upload
 
-# Watch captured frames (timestamps enabled via monitor_filters)
+# Watch the console (frames are quiet by default; type `trace on` to stream them)
 pio device monitor
 ```
 
 ## Using the sniffer
 
 Open the serial monitor at **115200 baud**. On boot you'll see a banner and the
-current configuration. Each captured frame is printed as a single line, for example:
+current configuration. The firmware runs **quiet by default** - lifecycle and
+error events (`[wifi]`, `[mqtt]`, `[err]`, `[auto]`) still log, but individual
+frames are not printed. Type `trace on` to stream every captured frame as a
+single line, for example:
 
 ```
 1234567us len=7 01 10 34 12 00 9A F1 CRC=OK addr=0x01 reg=0x10 (temperature) temp_raw=4660
@@ -235,7 +246,8 @@ live data:
 | Command       | Effect                                                          |
 | ------------- | --------------------------------------------------------------- |
 | `gap <us>`    | Inter-frame idle gap that marks a frame boundary                |
-| `decode`      | Toggle register decoding vs. raw hex only                       |
+| `trace [on\|off]` | Stream decoded frames to the console (off by default = quiet) |
+| `decode`         | Toggle register decoding vs. raw hex only (when tracing) |
 | `badonly [on\|off\|reset]`  | Show only CRC=BAD frames / reset the counter      |
 | `tx [on\|off]` | Enable/disable transmit – `off` => listen-only, `on` => listen+send |
 | `on`          | Power the fan on (last used / default speed) – transmits        |
@@ -332,18 +344,26 @@ command is ignored and the bus is never driven – it is a pure sniffer.
 
 The base topic is `dvs`:
 
-| Topic | Dir | Payload | Meaning |
-| :--- | :--- | :--- | :--- |
-| `dvs/status` | out | `online`/`offline` | Availability (retained, MQTT LWT) |
-| `dvs/tx/set` | in | `ON`/`OFF` | Enable send (`ON`) or listen-only (`OFF`) |
-| `dvs/tx/state` | out | `ON`/`OFF` | Current transmit mode (retained) |
-| `dvs/power/set` | in | `ON`/`OFF` | Turn the fan on or off |
-| `dvs/power/state` | out | `ON`/`OFF` | Commanded power state (retained) |
-| `dvs/speed/set` | in | `0..84` | Set target fan speed |
-| `dvs/speed/state` | out | `0..84` | Commanded target speed (retained) |
-| `dvs/speed/actual` | out | `0..84` | Sniffed actual (ramping) speed |
-| `dvs/temperature` | out | e.g. `17.4` | Sniffed roof-space temperature (°C) |
-| `dvs/status/reg/NN` | out | hex bytes | Raw payload of status register `0xNN` (`01`, `06`, `12`, `13`) |
+| Topic                   | Dir | Payload                      | Meaning                                                                    |
+| ----------------------- | --- | ---------------------------- | -------------------------------------------------------------------------- |
+| `dvs/status`            | out | `online`/`offline`           | Availability (retained, MQTT LWT)                                          |
+| `dvs/tx/set`            | in  | `ON` / `OFF`                 | Enable send (`ON`) or listen-only (`OFF`)                                  |
+| `dvs/tx/state`          | out | `ON` / `OFF`                 | Current transmit mode (retained)                                           |
+| `dvs/power/set`         | in  | `ON` / `OFF`                 | Turn the fan on or off                                                     |
+| `dvs/power/state`       | out | `ON` / `OFF`                 | Commanded power state (retained)                                           |
+| `dvs/speed/set`         | in  | `0`..`84`                    | Set target fan speed                                                       |
+| `dvs/speed/state`       | out | `0`..`84`                    | Commanded target speed (retained)                                          |
+| `dvs/speed/actual`      | out | `0`..`84`                    | Sniffed actual (ramping) speed                                             |
+| `dvs/temperature`       | out | e.g. `17.4`                  | Sniffed roof-space temperature (°C)                                        |
+| `dvs/inside_temp/set`   | in  | e.g. `18.5`                  | Inside temperature for auto control (feed from HA)                         |
+| `dvs/inside_temp/state` | out | e.g. `18.5`                  | Last inside temperature received (retained)                                |
+| `dvs/mode/set`          | in  | `manual`/`auto`              | Manual control vs. automatic profiles                                      |
+| `dvs/mode/state`        | out | `manual`/`auto`              | Current control mode (retained)                                            |
+| `dvs/profile/set`       | in  | `summer`/`winter`/`auto`     | Selected ventilation profile                                               |
+| `dvs/profile/state`     | out | `summer`/`winter`/`auto`     | Current profile (retained)                                                 |
+| `dvs/moisture/set`      | in  | `ON` / `OFF`                 | Winter moisture-floor ventilation                                          |
+| `dvs/moisture/state`    | out | `ON` / `OFF`                 | Moisture floor state (retained)                                            |
+| `dvs/status/reg/NN`     | out | hex bytes                    | Raw payload of status register `0xNN` (`01`, `06`, `12`, `13`)             |
 
 State topics are (re)published immediately when a command is applied and again
 every `STATE_PUBLISH_MS` (default 15 s) so clients that reconnect between
@@ -353,11 +373,14 @@ commands still see current values.
 
 On each MQTT connect the firmware publishes retained [MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery)
 configs, so Home Assistant auto-creates everything under a single **DVS G3**
-device – no YAML required:
+device - no YAML required:
 
 - a **fan** entity (on/off + speed as a percentage over the `1..84` range),
 - **sensors** for roof temperature and actual fan speed,
 - a **switch** for transmit mode (listen-only vs listen+send),
+- **selects** for control mode (`manual`/`auto`) and profile (`summer`/`winter`/`auto`),
+- a **switch** for winter moisture-floor ventilation,
+- a **number** for the inside temperature fed into auto control,
 - **diagnostic sensors** for each status-block register (`0x01/0x06/0x12/0x13`).
 
 Availability follows the `dvs/status` LWT, so entities show *unavailable* when the
