@@ -14,8 +14,11 @@
 //      whenever the supply air is above a cold cutoff (minSupply), even when it
 //      is not adding heat (the "moisture floor"); add a proportional speed boost
 //      on top when the roof air is actually warmer than inside (free heating).
-//      Cut off below minSupply (too cold to dump) or once the house is already
-//      warm enough (comfortHigh).
+//      With the moisture floor on, the fan keeps a trickle going even once the
+//      house is warm (comfortHigh only caps the free-heat boost, it does not stop
+//      the fan); only the cold cutoff (minSupply) stops it. With the floor off
+//      (heat-only) it stops once the house is warm enough (comfortHigh) or the
+//      roof air is too cold.
 // 
 // SUMMER (free cooling): ventilate when the roof/night air is cooler than
 //      inside; block hot midday roof air above maxSupply and stop once the house

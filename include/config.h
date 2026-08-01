@@ -138,8 +138,12 @@ static constexpr float DVS_PROFILE_DEADBAND_ON_C = 1.5f;
 static constexpr float DVS_PROFILE_DEADBAND_OFF_C = 0.5f;
 // Favourable differential at which the fan reaches maxSpeed.
 static constexpr float DVS_PROFILE_SPAN_C = 5.0f;
-// Winter: stop once the house is already this warm (avoid overheating).
-static constexpr float DVS_PROFILE_COMFORT_HIGH_C = 21.0f;
+// Winter: inside-tempature ceiling. In heat-only mode the fan stops once the
+// house reaches this; with the moisture floor on it only caps the free-heat
+// boost (the moisture trickle keeps running above it). Set above the ~20 C
+// central-heating target so free solar-warmed roof air can bank a few extra
+// degrees before the boost is capped.
+static constexpr float DVS_PROFILE_COMFORT_HIGH_C = 24.0f;
 // Summer: stop once the house is already this cool (don't chill below sleeping).
 static constexpr float DVS_PROFILE_COMFORT_LOW_C = 18.0f;
 // Winter: never supply raw roof air colder than this (matches the observed unit

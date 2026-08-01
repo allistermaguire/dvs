@@ -280,8 +280,10 @@ on the console.
 - **Winter (moisture-first)** — keeps a trickle of ventilation for
   moisture/condensation control whenever the roof air is above the cold cutoff
   (`minSupply`), *even when it is not adding heat*; adds a proportional speed
-  boost on top when the roof is warmer than inside. Cuts off below `minSupply`,
-  or once the house is already warm (`comfortHigh`).
+  boost on top when the roof is warmer than inside. Only the cold cutoff
+  (`minSupply`) stops it - once the house is warm (`comfortHigh`) the free-heat
+  boost is capped but the moisture trickle keeps running. (With the moisture
+  floor off it reverts to heat-only: stops at `comfortHigh` or with no benefit.)
 - **Summer (free cooling)** — ventilates when the roof/night air is cooler than
   inside; blocks hot midday roof air above `maxSupply`, and stops once the house
   is already cool (`comfortLow`).
@@ -308,7 +310,7 @@ the 12 °C floor) commands the fan **off**; above 12 °C the moisture floor hold
 | Setting | Default | Meaning |
 | -------- | -------: | -------- |
 | `DVS_PROFILE_COMFORT_TARGET_C` | 19 | `auto` summer/winter switch point |
-| `DVS_PROFILE_COMFORT_HIGH_C` | 21 | Winter: stop once inside is this warm |
+| `DVS_PROFILE_COMFORT_HIGH_C` | 24 | Winter: inside ceiling - caps the free-heat boost (moisture trickle still runs above it) |
 | `DVS_PROFILE_COMFORT_LOW_C` | 18 | Summer: stop once inside is this cool |
 | `DVS_PROFILE_MIN_SUPPLY_C` | 12 | Winter: never supply roof air colder than this |
 | `DVS_PROFILE_MAX_SUPPLY_C` | 24 | Summer: never supply roof air hotter than this |

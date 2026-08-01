@@ -37,27 +37,33 @@ uint8_t dvsProfileSpeed(const DvsProfileInputs &in, const DvsProfileConfig &cfg,
 
     if (in.profile == DVS_PROFILE_WINTER) {
         // Supply air == raw roof temp (no exchanger core). Never dump air colder
-        // than minSupply, and back off once the house is already warm enough.
-        // The running fan cools its own roof reading, so give it supplyHyst of
-        // slack below the cutoff before stopping (prevents on/off flapping when
-        // the roof sits near minSupply, e.g. ~12 C).
+        // than minSupply. The running fan cools its own roof reading, so give it
+        // supplyHyst of slack below the cutoff before it stopping (prevents on/off
+        // flapping when the roof sits near minSupply, e.g. ~12 C).
         const float minSupply =
             running ? cfg.minSupplyC - cfg.supplyHystC : cfg.minSupplyC;
-        if (in.roofTempC < minSupply || in.insideTempC >= cfg.comfortHighC) {
+        if (in.roofTempC < minSupply) {
             return 0;
         }
         const float benefit = in.roofTempC - in.insideTempC; // >0 == free heat
-        const uint8_t boost = proportionalBoost(benefit, cfg);
+        const bool warmEnough = in.insideTempC >= cfg.comfortHighC;
         if (in.moistureFloor) {
-            // Moisture-first: hold at least a trickle whenever the supply air is
-            // above the cold cutoff, even when it is not adding heat.
+            // Moisture-first: keep venting for condensation wherever the supply
+            // air is above the cold cutoff - even once the house is already warm
+            // (comfortHigh does NOT stop it; only the cold cutoff can). Add the
+            // free-heat boost only while below comfortHigh; at/above it hold the
+            // bare trickle so we still get ventilation for moisture without actively
+            // overheating.
+            const uint8_t boost = warmEnough ? 0 : proportionalBoost(benefit, cfg);
             return clampSpeed((long)cfg.minSpeed + boost, cfg.minSpeed,
                               cfg.maxSpeed);
         }
-        // Heat-only: require a genuine warming benefit (with hysteresis).
-        if (benefit < startStop) {
+        // Heat-only: back off once the house is already warm enough, and require 
+        // a genuine warming benefit (with hysteresis).
+        if (warmEnough || benefit < startStop) {
             return 0;
         }
+        const uint8_t boost = proportionalBoost(benefit, cfg);
         return clampSpeed((long)cfg.minSpeed + boost, cfg.minSpeed, cfg.maxSpeed);
     }
 

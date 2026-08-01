@@ -71,9 +71,13 @@ void test_winter_supply_cutoff_hysteresis_no_flap() {
     TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(10.0f, 19.0f, true), cfg(), 12));
 }
 
-void test_winter_off_when_house_already_warm() {
-    // Inside >= comfortHigh (21 C): stop, regardless of roof temp / moisture.
-    TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(25.0f, 21.0f, true), cfg(), 40));
+void test_winter_moisture_runs_when_house_already_warm() {
+    // Moisture floor ON with inside >= comfortHigh (24 C): keep venting for
+    // condensation - comfortHigh does NOT stop it, it only caps the free-heat
+    // boost, so we hold the bare trickle (minSpeed) even though roof is warmer.
+    TEST_ASSERT_EQUAL_UINT8(12, dvsProfileSpeed(winter(26.0f, 24.0f, true), cfg(), 40));
+    // Moisture floor OFF at the same warm house: heat-only stops at comfortHigh.
+    TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(26.0f, 24.0f, false), cfg(), 40));
 }
 
 void test_winter_heat_only_no_floor_requires_benefit() {
@@ -165,7 +169,7 @@ int main(int, char **) {
     RUN_TEST(test_winter_moisture_runs_at_13C_not_adding_heat);
     RUN_TEST(test_winter_moisture_off_below_cold_cutoff);
     RUN_TEST(test_winter_supply_cutoff_hysteresis_no_flap);
-    RUN_TEST(test_winter_off_when_house_already_warm);
+    RUN_TEST(test_winter_moisture_runs_when_house_already_warm);
     RUN_TEST(test_winter_heat_only_no_floor_requires_benefit);
     RUN_TEST(test_winter_heating_boost_scales_with_benefit);
     RUN_TEST(test_winter_heating_partial_boost);
