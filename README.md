@@ -241,9 +241,9 @@ live data:
 | `on`          | Power the fan on (last used / default speed) – transmits        |
 | `off`         | Power the fan off (stop) – transmits                            |
 | `speed <n>`   | Set target fan speed `0..84` – transmits                        |
-| `mode <manual|auto>` | Manual control vs. automatic summer/winter profiles |
-| `profile <summer|winter|auto>` | Select the ventilation profile (`auto` picks by inside temp) |
-| `moisture [on|off]` | Winter moisture-floor ventilation on/off/toggle |
+| `mode [manual\|auto]` | Manual control vs. automatic summer/winter profiles |
+| `profile [summer\|winter\|auto]` | Select the ventilation profile (`auto` picks by inside temp) |
+| `moisture [on\|off]` | Winter moisture-floor ventilation on/off/toggle |
 | `inside <°C>` | Feed the inside temperature used by auto control |
 | `status` | Print the current configuration (incl. mode/profile/inside) |
 | `help` | List commands |
