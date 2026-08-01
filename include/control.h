@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "profile.h"
+
 // Fan control API. Implemented in main.cpp (which owns the RS485 bus) so there
 // is a single place that drives the MAX3485 DE/RE line and Serial2. The MQTT
 // layer (net.cpp) calls these to act on incoming commands.
@@ -31,3 +33,45 @@ bool dvsControlGetTxEnabled();
 // transmit). In listen-only mode this lets the reported/MQTT fan state follow
 // the real fan as commanded by the existing wall controller.
 void dvsControlReportObserved(uint8_t targetSpeed);
+
+// --- Automatic ventilation control (summer / winter profiles) --------------
+// In `manual` mode the fan follows explicit power/speed commands (the behaviour
+// above). In `auto` mode a periodic tick computes a target speed from the roof
+// (supply) temperature and the inside temperature via the profile logic and
+// drives the fan - but only while transmit is enabled, and it fails safe to OFF
+// when either temperature is stale.
+enum DvsControlMode : uint8_t {
+    DVS_MODE_MANUAL = 0,
+    DVS_MODE_AUTO = 1,
+};
+
+// Profile selection. AUTO resolves to summer/winter each tick from the inside
+// temperature (for the shoulder seasons); SUMMER/WINTER force a profile.
+enum DvsProfileSel : uint8_t {
+    DVS_PROFILE_SEL_SUMMER = 0,
+    DVS_PROFILE_SEL_WINTER = 1,
+    DVS_PROFILE_SEL_AUTO = 2,
+};
+
+void dvsControlSetMode(DvsControlMode mode);
+DvsControlMode dvsControlGetMode();
+
+void dvsControlSetProfile(DvsProfileSel sel);
+DvsProfileSel dvsControlGetProfile();
+// The profile actually in effect right now (AUTO resolved to summer/winter).
+DvsProfile dvsControlGetEffectiveProfile();
+
+// Winter moisture floor: keep a trickle of ventilation for condensation control
+// even when the roof air is not adding heat (down to the cold cutoff).
+void dvsControlSetMoistureFloor(bool on);
+bool dvsControlGetMoistureFloor();
+
+// Feed the inside temperature (deg C), typically from a Home Assistant sensor
+// over MQTT. Records the value and a freshness timestamp.
+void dvsControlSetInsideTemp(float celsius);
+// Latest inside temperature. Returns false if none has ever been received.
+bool dvsControlGetInsideTemp(float *celsius);
+
+// Run one non-blocking step of the auto-control loop. Call from loop(); it only
+// acts on its own DVS_CONTROL_TICK_MS cadence and only in auto mode.
+void dvsControlAutoTick();
