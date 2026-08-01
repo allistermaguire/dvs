@@ -38,7 +38,12 @@ uint8_t dvsProfileSpeed(const DvsProfileInputs &in, const DvsProfileConfig &cfg,
     if (in.profile == DVS_PROFILE_WINTER) {
         // Supply air == raw roof temp (no exchanger core). Never dump air colder
         // than minSupply, and back off once the house is already warm enough.
-        if (in.roofTempC < cfg.minSupplyC || in.insideTempC >= cfg.comfortHighC) {
+        // The running fan cools its own roof reading, so give it supplyHyst of
+        // slack below the cutoff before stopping (prevents on/off flapping when
+        // the roof sits near minSupply, e.g. ~12 C).
+        const float minSupply =
+            running ? cfg.minSupplyC - cfg.supplyHystC : cfg.minSupplyC;
+        if (in.roofTempC < minSupply || in.insideTempC >= cfg.comfortHighC) {
             return 0;
         }
         const float benefit = in.roofTempC - in.insideTempC; // >0 == free heat
@@ -57,7 +62,11 @@ uint8_t dvsProfileSpeed(const DvsProfileInputs &in, const DvsProfileConfig &cfg,
     }
 
     // Summer: free cooling with cool roof/night air; block hot midday roof air.
-    if (in.roofTempC > cfg.maxSupplyC || in.insideTempC <= cfg.comfortLowC) {
+    // Symmetric slack: a running fan tolerates supplyHyst above the hot cutoff
+    // before stopping, so it does not flap when the roof hovers near maxSupply.
+    const float maxSupply =
+        running ? cfg.maxSupplyC + cfg.supplyHystC : cfg.maxSupplyC;
+    if (in.roofTempC > maxSupply || in.insideTempC <= cfg.comfortLowC) {
         return 0;
     }
     const float benefit = in.insideTempC - in.roofTempC; // >0 == free cooling

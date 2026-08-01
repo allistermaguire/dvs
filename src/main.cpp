@@ -115,7 +115,7 @@ static void printConfig() {
         RS485_DE_RE_PIN);
     Serial.printf("[cfg] badonly=%s badCount=%lu\n", g_badOnly ? "on" : "off",
                   (unsigned long)g_badFrameCount);
-    const DvsControlMode sel = dvsControlGetMode();
+    const DvsProfileSel sel = dvsControlGetProfile();
     const char *profStr = (sel == DVS_PROFILE_SEL_SUMMER) ? "summer"
                         : (sel == DVS_PROFILE_SEL_WINTER) ? "winter"
                                                           : "auto";

@@ -47,6 +47,7 @@ struct DvsProfileConfig {
     float comfortLowC;  // summer: stop once inside is already this cool
     float minSupplyC;   // winter: never supply raw roof air colder than this
     float maxSupplyC;   // summer: never supply raw roof air hotter than this
+    float supplyHystC;  // slack below/above the supply cutoff for a RUNNING fan
     uint8_t minSpeed;   // gentle trickle speed
     uint8_t maxSpeed;   // full/boost speed
 };

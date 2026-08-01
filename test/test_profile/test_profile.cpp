@@ -22,6 +22,7 @@ static DvsProfileConfig cfg() {
     c.comfortLowC = 18.0f;
     c.minSupplyC = 12.0f;
     c.maxSupplyC = 24.0f;
+    c.supplyHystC = 1.5f;
     c.minSpeed = 12;
     c.maxSpeed = 84;
     return c;
@@ -55,9 +56,19 @@ void test_winter_moisture_runs_at_13C_not_adding_heat() {
 }
 
 void test_winter_moisture_off_below_cold_cutoff() {
-    // Roof 11 C is below minSupply (12 C): too cold to dump, fan off even with
-    // the moisture floor enabled.
-    TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(11.0f, 19.0f, true), cfg(), 30));
+    // Roof 11 C is below minSupply (12 C): too cold to start, fan off even with
+    // the moisture floor enabled (stopped fan uses the full cutoff).
+    TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(11.0f, 19.0f, true), cfg(), 0));
+}
+
+void test_winter_supply_cutoff_hysteresis_no_flap() {
+    // Roof 11.5 C: below minSupply (12 C) but within supplyHyst (1.5 C). A
+    // running fan (cur>0) keeps its trickle - it cooled its own reading below
+    // the cutoff and must not flap off; a stopped fan (cur=0) still stays off.
+    TEST_ASSERT_EQUAL_UINT8(12, dvsProfileSpeed(winter(11.5f, 19.0f, true), cfg(), 12));
+    TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(11.5f, 19.0f, true), cfg(), 0));
+    // Below the hysteresis band (10 C < 12 - 1.5): even a running fan stops.
+    TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(10.0f, 19.0f, true), cfg(), 12));
 }
 
 void test_winter_off_when_house_already_warm() {
@@ -134,6 +145,7 @@ int main(int, char **) {
     UNITY_BEGIN();
     RUN_TEST(test_winter_moisture_runs_at_13C_not_adding_heat);
     RUN_TEST(test_winter_moisture_off_below_cold_cutoff);
+    RUN_TEST(test_winter_supply_cutoff_hysteresis_no_flap);
     RUN_TEST(test_winter_off_when_house_already_warm);
     RUN_TEST(test_winter_heat_only_no_floor_requires_benefit);
     RUN_TEST(test_winter_heating_boost_scales_with_benefit);

@@ -142,6 +142,12 @@ static constexpr float DVS_PROFILE_COMFORT_LOW_C = 18.0f;
 static constexpr float DVS_PROFILE_MIN_SUPPLY_C = 12.0f;
 // Summer: never bring in roof air hotter than this (block hot midday air).
 static constexpr float DVS_PROFILE_MAX_SUPPLY_C = 24.0f;
+// Supply-cutoff hysteresis: a RUNNING fan is allowed this much slack below
+// minSupply (and above maxSupply) before it stops. A running fan cools its own
+// roof-temp reading, dipping it under the cutoff; without slack the fan cuts
+// out, the reading recovers, and it restarts - the classic on/off flap near the
+// cutoff (e.g. ~12 C). Stopping still requires the full cutoff to be crossed.
+static constexpr float DVS_PROFILE_SUPPLY_HYST_C = 1.5f;
 // Proportional speed range used by the profiles (a gentle trickle .. boost).
 static constexpr uint8_t DVS_PROFILE_MIN_SPEED = 12;
 static constexpr uint8_t DVS_PROFILE_MAX_SPEED = DVS_MAX_SPEED;
