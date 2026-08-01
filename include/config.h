@@ -23,8 +23,8 @@ static constexpr int RS485_TX_PIN = 17;
 static constexpr int RS485_DE_RE_PIN = 4;
 
 // --- Serial line settings ----------------------------------------------------
-static constexpr uint32_t USB_BAUD = 115200;      // debug/monitor console
-static constexpr uint32_t DEFAULT_BUS_BAUD = 4800; // DVS bus (runtime-adjustable)
+static constexpr uint32_t USB_BAUD = 115200; // debug/monitor console
+static constexpr uint32_t BUS_BAUD = 4800;   // DVS bus (confirmed 4800 8N1)
 
 // --- Frame boundary detection ------------------------------------------------
 // At 4800 8N1 one byte takes ~2.08 ms. An idle gap longer than this threshold

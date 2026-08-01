@@ -228,13 +228,9 @@ live data:
 
 | Command       | Effect                                                          |
 | ------------- | --------------------------------------------------------------- |
-| `baud <n>`    | Set the bus baud rate (e.g. `baud 4800`)                        |
 | `gap <us>`    | Inter-frame idle gap that marks a frame boundary                |
 | `decode`      | Toggle register decoding vs. raw hex only                       |
-| `crcinit <h>` | Set CRC init value (e.g. `crcinit 0x1D0F`)                      |
-| `crcrefl`     | Toggle CRC input/output reflection                              |
-| `crcend`      | Toggle transmitted CRC byte order (little/big endian)           |
-| `en [hi\|lo]`  | Set/toggle the transceiver `EN` (DE/RE) pin level              |
+| `badonly [on\|off\|reset]`  | Show only CRC=BAD frames / reset the counter      |
 | `tx [on\|off]` | Enable/disable transmit – `off` => listen-only, `on` => listen+send |
 | `on`          | Power the fan on (last used / default speed) – transmits        |
 | `off`         | Power the fan off (stop) – transmits                            |
@@ -299,18 +295,22 @@ if your HA uses a non-default discovery prefix, or edit `HA_DEVICE_NAME`. The
 PubSubClient buffer is raised to 768 bytes in `netSetup()` because the discovery
 JSON exceeds the 256-byte default.
 
+
 How control maps onto the bus:
 
-- **Speed** → write register `0x15` (1-byte payload) to the fan address (`0x02`).
-- **Power off** → write register `0x15` with `0`. Live captures show the wall
-  controller has **no separate stop register** (`0x05`) – "off" is just speed 0,
+- **Speed** -> write register `0x15` (1-byte payload) to the fan address (`0x02`).
+- **Power off** -> write register `0x15` with `0`. Live captures show the wall
+  controller has **no separate stop register** (`0x05`) -- "off" is just speed 0,
   and the fan ramps down on its own.
-- **Power on** → re-send the last non-zero speed (or `DVS_DEFAULT_SPEED`).
-- **Keep-alive** -> the current speed target (`0x15`) is re-sent every
-  `DVS_KEEPALIVE_INTERVAL_MS` (300 ms). The controller itself doubles each write
-  (~75 ms apart) and repeats the pair every ~258 ms (max gap the fan sees
-  ~182 ms); the firmware simplifies this to a single re-send. There is **no
-  `0x03` deadman** on this bus - re-writing `0x15` is the keepalive.
+- **Power on** -> re-send the last non-zero speed (or `DVS_DEFAULT_SPEED`).
+- **Keep-alive / polling** -> in transmit mode the firmware runs a response-driven
+  **poll cycle**: it alternates a `0x15` write (the keepalive -- "off" is just
+  target `0`; there is **no `0x03` deadman**) and a `0x10` temperature read, one
+  request outstanding at a time, resending once if no reply arrives (the
+  controller's doubled frame) and advancing after the reply or a timeout. Keeping
+  the two conversations 1:1 is what stops the fan locking onto the keepalive and
+  ignoring the temperature query. Timing lives in `DVS_POLL_RESEND_MS`,
+  `DVS_POLL_REPLY_TIMEOUT_MS` and `DVS_POLL_GAP_MS`.
 
 The same actions are available over USB via the `on`, `off` and `speed <n>`
 console commands, which is the easiest way to test the transmit path before
@@ -335,9 +335,9 @@ frames:
 | CRC on wire | **big-endian** (MSB first) |
 
 These are the firmware defaults, so frames should show `CRC=OK` out of the box.
-If you ever need to re-derive it from a fresh capture, the runtime `crcinit`,
-`crcrefl` and `crcend` commands let you sweep the common variants against live
-data.
+The varient is now baked in as a fixed constant; the runtime CRC-sweep commands
+used to derive it have been removed. To re-derive it from a fresh capture,
+temporarily make `g_crcParams` / `g_crcBigEndian` adjustable again.
 
 ## Capturing commands
 

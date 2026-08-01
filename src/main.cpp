@@ -16,17 +16,15 @@
 #include "net.h"
 
 // --- Runtime-adjustable state ------------------------------------------------
-static uint32_t g_busBaud = DEFAULT_BUS_BAUD;
 static uint32_t g_gapThresholdUs = DEFAULT_GAP_THRESHOLD_US;
 static bool g_decode = true;         // decode registers vs raw hex only
 static bool g_badOnly = false;       // print only CRC=BAD frames (bus-error tracking)
 static uint32_t g_badFrameCount = 0; // running total of CRC=BAD frames seen
-static Crc16Params g_crcParams;      // defaults to CRC-16/CCITT-FALSE
-static bool g_crcBigEndian = true;   // transmitted CRC byte order (MSB first)
-// Level driven on the transceiver EN / DE-RE pin. On a textbook MAX3485 LOW is
-// receive-only, but some breakouts invert EN, so this is runtime-adjustable to
-// find the passive (non-driving) state for the actual board in use.
-static bool g_enableHigh = false;    // false => pin LOW, true => pin HIGH
+
+// Confirmed DVS wire parameters (see crc16.h). Fixed now that the protocol is
+// reverse-engineered; no longer console-adjustable.
+static const Crc16Params g_crcParams;        // CRC-16/AUG-CCITT (init 0x1D0F)
+static constexpr bool g_crcBigEndian = true; // CRC transmitted MSB first
 
 // --- Fan control state (commanded, i.e. what we last told the fan) -----------
 static bool g_txEnabled = DVS_TX_ENABLED_DEFAULT; // false => listen-only
@@ -61,11 +59,12 @@ static uint8_t g_rxReg = 0;             // register of the last CRC-OK frame rec
 static uint32_t g_rxRegMs = 0;          // millis() when it arrived (poll reply detect)
 
 static void applyEnable() {
-    digitalWrite(RS485_DE_RE_PIN, g_enableHigh ? HIGH : LOW);
+    // Passive listen level: DE+RE LOW = driver ddisabled,receiver enabled.
+    digitalWrite(RS485_DE_RE_PIN, LOW);
 }
 
 static void configureBus() {
-    Serial2.begin(g_busBaud, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
+    Serial2.begin(BUS_BAUD, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
 }
 
 // --- Transmit path -----------------------------------------------------------
@@ -325,13 +324,10 @@ void dvsControlAutoTick() {
 
 static void printConfig() {
     Serial.printf(
-        "[cfg] busBaud=%lu gapUs=%lu decode=%s crcInit=0x%04X crcReflected=%s "
-        "crcBigEndian=%s en=%s tx=%s pins(RX=%d TX=%d DE/RE=%d)\n",
-        (unsigned long)g_busBaud, (unsigned long)g_gapThresholdUs,
-        g_decode ? "on" : "off", g_crcParams.init,
-        g_crcParams.reflected ? "yes" : "no", g_crcBigEndian ? "yes" : "no",
-        g_enableHigh ? "HIGH" : "LOW", g_txEnabled ? "send" : "listen",
-        RS485_RX_PIN, RS485_TX_PIN, RS485_DE_RE_PIN);
+        "[cfg] gapUs=%lu decode=%s tx=%s pins(RX=%d TX=%d DE/RE=%d)\n",
+        (unsigned long)g_gapThresholdUs, g_decode ? "on" : "off",
+        g_txEnabled ? "send" : "listen", RS485_RX_PIN, RS485_TX_PIN,
+        RS485_DE_RE_PIN);
     Serial.printf("[cfg] badonly=%s badCount=%lu\n", g_badOnly ? "on" : "off",
                   (unsigned long)g_badFrameCount);
     const char *profStr = (g_profileSel == DVS_PROFILE_SEL_SUMMER) ? "summer"
@@ -346,14 +342,9 @@ static void printConfig() {
 
 static void printHelp() {
     Serial.println(F("Commands:"));
-    Serial.println(F("  baud <n>      set bus baud rate (e.g. baud 4800)"));
     Serial.println(F("  gap <us>      set inter-frame gap threshold in microseconds"));
     Serial.println(F("  decode        toggle register decoding on/off"));
     Serial.println(F("  badonly [on|off|reset] show only CRC=BAD frames / reset counter"));
-    Serial.println(F("  crcinit <h>   set CRC init value (0x0000 or 0xFFFF)"));
-    Serial.println(F("  crcrefl       toggle CRC input/output reflection"));
-    Serial.println(F("  crcend        toggle CRC byte order (little/big endian)"));
-    Serial.println(F("  en [hi|lo]    set/toggle transceiver EN (DE/RE) pin level"));
     Serial.println(F("  tx [on|off]   enable/disable transmit (listen+send vs listen-only)"));
     Serial.println(F("  on            power the fan on (last/default speed)"));
     Serial.println(F("  off           power the fan off (stop)"));
@@ -516,16 +507,7 @@ static void handleCommand(const String &raw) {
         return;
     }
 
-    if (cmd.startsWith("baud")) {
-        long v = cmd.substring(4).toInt();
-        if (v > 0) {
-            g_busBaud = (uint32_t)v;
-            configureBus();
-            Serial.printf("[ok] busBaud=%lu\n", (unsigned long)g_busBaud);
-        } else {
-            Serial.println(F("[err] usage: baud <n>"));
-        }
-    } else if (cmd.startsWith("gap")) {
+    if (cmd.startsWith("gap")) {
         long v = cmd.substring(3).toInt();
         if (v > 0) {
             g_gapThresholdUs = (uint32_t)v;
@@ -553,16 +535,6 @@ static void handleCommand(const String &raw) {
         }
         Serial.printf("[ok] badonly=%s badCount=%lu\n", g_badOnly ? "on" : "off",
                     (unsigned long)g_badFrameCount);
-    } else if (cmd.startsWith("crcinit")) {
-        long v = strtol(cmd.substring(7).c_str(), nullptr, 0);
-        g_crcParams.init = (uint16_t)v;
-        Serial.printf("[ok] crcInit=0x%04X\n", g_crcParams.init);
-    } else if (cmd == "crcrefl") {
-        g_crcParams.reflected = !g_crcParams.reflected;
-        Serial.printf("[ok] crcReflected=%s\n", g_crcParams.reflected ? "yes" : "no");
-    } else if (cmd == "crcend") {
-        g_crcBigEndian = !g_crcBigEndian;
-        Serial.printf("[ok] crcBigEndian=%s\n", g_crcBigEndian ? "yes" : "no");
     } else if (cmd.startsWith("tx")) {
         String arg = cmd.substring(2);
         arg.trim();
@@ -575,21 +547,6 @@ static void handleCommand(const String &raw) {
         } else {
             Serial.println(F("[err] usage: tx [on|off]"));
         }
-    } else if (cmd.startsWith("en")) {
-        String arg = cmd.substring(2);
-        arg.trim();
-        if (arg == "hi" || arg == "high" || arg == "1") {
-            g_enableHigh = true;
-        } else if (arg == "lo" || arg == "low" || arg == "0") {
-            g_enableHigh = false;
-        } else if (!arg.isEmpty()) {
-            g_enableHigh = !g_enableHigh; // bare `en` toggles
-        } else {
-            Serial.println(F("[err] usage: en [hi|lo]"));
-            return;
-        }
-        applyEnable();
-        Serial.printf("[ok] en=%s\n", g_enableHigh ? "HIGH" : "LOW");
     } else if (cmd == "on") {
         dvsControlSetPower(true);
         Serial.printf("[ok] power on speed=%u\n", (unsigned)dvsControlGetSpeed());
