@@ -90,3 +90,8 @@ DvsProfile dvsProfileAuto(float insideTempC, float comfortTargetC,
     }
     return current;
 }
+
+bool dvsProfileInputsFresh(bool haveRoof, uint32_t roofAgeMs, bool haveInside,
+                            uint32_t insideAgeMs, uint32_t staleMs) {
+    return haveRoof && haveInside && roofAgeMs < staleMs && insideAgeMs < staleMs;
+}

@@ -21,7 +21,8 @@
 
 // --- Runtime-adjustable state ------------------------------------------------
 static uint32_t g_gapThresholdUs = DEFAULT_GAP_THRESHOLD_US;
-static bool g_decode = true;         // decode registers vs raw hex only
+static bool g_frameTrace = DVS_FRAME_TRACE_DEFAULT; // stream frames to the console
+static bool g_decode = true;         // when tracing, decode regs vs raw hex
 static bool g_badOnly = false;       // print only CRC=BAD frames (bus-error tracking)
 static uint32_t g_badFrameCount = 0; // running total of CRC=BAD frames seen
 
@@ -85,7 +86,10 @@ void dvsBusSend(uint8_t reg, const uint8_t *payload, size_t payloadLen) {
     // frames. We never hear our own transmit back (the driver is enabled and the
     // receiver muted while sending), so without this the console would only ever
     // show the fan's responses and never what we actually put on the wire.
-    // Honours the `decode` toggle exactly like flushFrame() does for RX frames.
+    // Skipped when frame tracing is off (production quiet); honours `decode`.
+    if (!g_frameTrace) {
+        return;
+    }
     DvsFrame txFrame;
     txFrame.startMicros = micros();
     txFrame.len = (n <= MAX_FRAME_LEN) ? n : MAX_FRAME_LEN;
@@ -109,10 +113,10 @@ void dvsBusSend(uint8_t reg, const uint8_t *payload, size_t payloadLen) {
 
 static void printConfig() {
     Serial.printf(
-        "[cfg] gapUs=%lu decode=%s tx=%s pins(RX=%d TX=%d DE/RE=%d)\n",
-        (unsigned long)g_gapThresholdUs, g_decode ? "on" : "off",
-        dvsControlGetTxEnabled() ? "send" : "listen", RS485_RX_PIN, RS485_TX_PIN,
-        RS485_DE_RE_PIN);
+        "[cfg] gapUs=%lu trace=%s decode=%s tx=%s pins(RX=%d TX=%d DE/RE=%d)\n",
+        (unsigned long)g_gapThresholdUs, g_frameTrace ? "on" : "off",
+        g_decode ? "on" : "off", dvsControlGetTxEnabled() ? "send" : "listen",
+        RS485_RX_PIN, RS485_TX_PIN, RS485_DE_RE_PIN);
     Serial.printf("[cfg] badonly=%s badCount=%lu\n", g_badOnly ? "on" : "off",
                   (unsigned long)g_badFrameCount);
     const DvsProfileSel sel = dvsControlGetProfile();
@@ -132,7 +136,8 @@ static void printConfig() {
 static void printHelp() {
     Serial.println(F("Commands:"));
     Serial.println(F("  gap <us>      set inter-frame gap threshold in microseconds"));
-    Serial.println(F("  decode        toggle register decoding on/off"));
+    Serial.println(F("  trace [on|off] stream decoded frames to the console (off = quiet)"));
+    Serial.println(F("  decode        toggle register decoding on/off (when tracing)"));
     Serial.println(F("  badonly [on|off|reset] show only CRC=BAD frames / reset counter"));
     Serial.println(F("  tx [on|off]   enable/disable transmit (listen+send vs listen-only)"));
     Serial.println(F("  on            power the fan on (last/default speed)"));
@@ -264,6 +269,13 @@ static void flushFrame() {
         g_rxReg = dvs_frame_register(g_frame);
         g_rxRegMs = millis();
     }
+    // Frame tracing off (production quiet): keep the bookkeeping above but emit
+    // no per-frame lines. Events (wifi/mqtt/err/auto) and MQTT are unaffected.
+    // badCount is still visible via `status`.
+    if (!g_frameTrace) {
+        g_frame.len = 0;
+        return;
+    }
     if (g_badOnly && crcOk) {
         g_frame.len = 0; // drop good frames from the console in bad-only mode
         return;
@@ -295,8 +307,8 @@ static void handleCommand(const String &raw) {
     }
 
     if (cmd.startsWith("gap")) {
-        long v = cmd.substring(3).toInt();
-        if (v > 0) {
+        long v;
+        if (dvsParseIntRange(cmd.substring(3).c_str(), 1, INT32_MAX, &v)) {
             g_gapThresholdUs = (uint32_t)v;
             Serial.printf("[ok] gapUs=%lu\n", (unsigned long)g_gapThresholdUs);
         } else {
@@ -305,6 +317,18 @@ static void handleCommand(const String &raw) {
     } else if (cmd == "decode") {
         g_decode = !g_decode;
         Serial.printf("[ok] decode=%s\n", g_decode ? "on" : "off");
+    } else if (cmd.startsWith("trace")) {
+        String arg = cmd.substring(5);
+        arg.trim();
+        switch (dvsParseTriState(arg.c_str())) {
+            case DVS_TRI_ON: g_frameTrace = true; break;
+            case DVS_TRI_OFF: g_frameTrace = false; break;
+            case DVS_TRI_TOGGLE: g_frameTrace = !g_frameTrace; break;
+            default:
+                Serial.println(F("[err] usage: trace [on|off]"));
+                return;
+        }
+        Serial.printf("[ok] trace=%s\n", g_frameTrace ? "on" : "off");
     } else if (cmd.startsWith("badonly")) {
         String arg = cmd.substring(7);
         arg.trim();
@@ -340,8 +364,8 @@ static void handleCommand(const String &raw) {
         dvsControlSetPower(false);
         Serial.println(F("[ok] power off"));
     } else if (cmd.startsWith("speed")) {
-        long v = cmd.substring(5).toInt();
-        if (v >= 0 && v <= DVS_MAX_SPEED) {
+        long v;
+        if (dvsParseIntRange(cmd.substring(5).c_str(), 0, DVS_MAX_SPEED, &v)) {
             dvsControlSetSpeed((uint8_t)v);
             Serial.printf("[ok] speed=%ld\n", v);
         } else {
@@ -350,27 +374,23 @@ static void handleCommand(const String &raw) {
     } else if (cmd.startsWith("mode")) {
         String arg = cmd.substring(4);
         arg.trim();
-        if (arg == "auto") {
-            dvsControlSetMode(DVS_MODE_AUTO);
-        } else if (arg == "manual") {
-            dvsControlSetMode(DVS_MODE_MANUAL);
+        DvsControlMode mode;
+        if (dvsParseMode(arg.c_str(), &mode)) {
+            dvsControlSetMode(mode);
         } else {
             Serial.println(F("[err] usage: mode <manual|auto>"));
         }
     } else if (cmd.startsWith("profile")) {
         String arg = cmd.substring(7);
         arg.trim();
-        if (arg == "summer") {
-            dvsControlSetProfile(DVS_PROFILE_SEL_SUMMER);
-        } else if (arg == "winter") {
-            dvsControlSetProfile(DVS_PROFILE_SEL_WINTER);
-        } else if (arg == "auto") {
-            dvsControlSetProfile(DVS_PROFILE_SEL_AUTO);
+        DvsProfileSel sel;
+        if (dvsParseProfile(arg.c_str(), &sel)) {
+            dvsControlSetProfile(sel);
+            Serial.printf("[ok] profile=%s\n", arg.c_str());
         } else {
             Serial.println(F("[err] usage: profile <summer|winter|auto>"));
             return;
         }
-        Serial.printf("[ok] profile=%s\n", arg.c_str());
     } else if (cmd.startsWith("moisture")) {
         String arg = cmd.substring(8);
         arg.trim();
@@ -389,12 +409,12 @@ static void handleCommand(const String &raw) {
     } else if (cmd.startsWith("inside")) {
         String arg = cmd.substring(6);
         arg.trim();
-        if (arg.isEmpty()) {
-            Serial.println(F("[err] usage: inside <degC>"));
-        } else {
-            const float t = arg.toFloat();
+        float t;
+        if (dvsParseFloat(arg.c_str(), &t)) {
             dvsControlSetInsideTemp(t);
             Serial.printf("[ok] inside=%.1f\n", (double)t);
+        } else {
+            Serial.printf("[err] usage: inside <degC>");
         }
     } else if (cmd == "status") {
         printConfig();

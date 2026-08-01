@@ -73,16 +73,15 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
     // setters don't publish, so this can't loop back to us while subscribed).
     if (s_restoreActive) {
         if (strcmp(topic, MQTT_TOPIC_MODE_STATE) == 0) {
-            dvsControlSetMode(strcasecmp(msg, "auto") == 0 ? DVS_MODE_AUTO
-                                                           : DVS_MODE_MANUAL);
+            DvsControlMode mode;
+            if (dvsParseMode(msg, &mode)) {
+                dvsControlSetMode(mode);
+            }
             return;
         } else if (strcmp(topic, MQTT_TOPIC_PROFILE_STATE) == 0) {
-            if (strcasecmp(msg, "summer") == 0) {
-                dvsControlSetProfile(DVS_PROFILE_SEL_SUMMER);
-            } else if (strcasecmp(msg, "winter") == 0) {
-                dvsControlSetProfile(DVS_PROFILE_SEL_WINTER);
-            } else {
-                dvsControlSetProfile(DVS_PROFILE_SEL_AUTO);
+            DvsProfileSel sel;
+            if (dvsParseProfile(msg, &sel)) {
+                dvsControlSetProfile(sel);
             }
             return;
         } else if (strcmp(topic, MQTT_TOPIC_TX_STATE) == 0) {
@@ -101,30 +100,29 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
         dvsControlSetPower(dvsParseOnOff(msg));
         netPublishState();
     } else if (strcmp(topic, MQTT_TOPIC_SPEED_SET) == 0) {
-        int v = atoi(msg);
-        if (v < 0) {
-            v = 0;
-        } else if (v > DVS_MAX_SPEED) {
-            v = DVS_MAX_SPEED;
+        long v;
+        if (dvsParseIntRange(msg, 0, DVS_MAX_SPEED, &v)) {
+            dvsControlSetSpeed((uint8_t)v);
+            netPublishState();
         }
-        dvsControlSetSpeed((uint8_t)v);
-        netPublishState();
 	} else if (strcmp(topic, MQTT_TOPIC_INSIDE_SET) == 0) {
-		dvsControlSetInsideTemp((float)atof(msg));
-		netPublishState();
-	} else if (strcmp(topic, MQTT_TOPIC_MODE_SET) == 0) {
-		dvsControlSetMode(strcasecmp(msg, "auto") == 0 ? DVS_MODE_AUTO
-													   : DVS_MODE_MANUAL);
-		netPublishState();
-	} else if (strcmp(topic, MQTT_TOPIC_PROFILE_SET) == 0) {
-		if (strcasecmp(msg, "summer") == 0) {
-			dvsControlSetProfile(DVS_PROFILE_SEL_SUMMER);
-		} else if (strcasecmp(msg, "winter") == 0) {
-			dvsControlSetProfile(DVS_PROFILE_SEL_WINTER);
-		} else {
-			dvsControlSetProfile(DVS_PROFILE_SEL_AUTO);
+		float t;
+		if (dvsParseFloat(msg, &t)) {
+			dvsControlSetInsideTemp(t);
+			netPublishState();
 		}
-		netPublishState();
+	} else if (strcmp(topic, MQTT_TOPIC_MODE_SET) == 0) {
+		DvsControlMode mode;
+        if (dvsParseMode(msg, &mode)) {
+            dvsControlSetMode(mode);
+            netPublishState();
+        }
+	} else if (strcmp(topic, MQTT_TOPIC_PROFILE_SET) == 0) {
+		DvsProfileSel sel;
+		if (dvsParseProfile(msg, &sel)) {
+			dvsControlSetProfile(sel);
+			netPublishState();
+		}
 	} else if (strcmp(topic, MQTT_TOPIC_MOISTURE_SET) == 0) {
 		dvsControlSetMoistureFloor(dvsParseOnOff(msg));
 		netPublishState();

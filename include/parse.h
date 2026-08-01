@@ -1,9 +1,16 @@
 #pragma once
 
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h> // strcasecmp on host/native builds
 
-// Small ON/OFF/toggle argument parser shared by the USB console and the MQTT
-// command layer, so the two do not each re-implement the same string matching.
+#include "control.h" // DvsControlMode / DvsProfileSel for the mode/profile parsers
+
+// Small argument parsers shared by the USB console and the MQTT command layer,
+// so the two do not each re-implement the same string matching. The numeric and
+// mode/profile parsers are strict: they reject invalid input instead of coercing
+// it to 0/defaults (a bad payload must not silently power the fan off or feed a
+// bogus 0 C into auto control).
 
 enum DvsTriState {
     DVS_TRI_ON,
@@ -34,4 +41,95 @@ inline DvsTriState dvsParseTriState(const char *arg) {
 // Truthy test for payloads that only distinguish "on" from anything else.
 inline bool dvsParseOnOff(const char *arg) {
     return dvsParseTriState(arg) == DVS_TRI_ON;
+}
+
+// Skip trailing whitespace, then require the string to have ended. Used by the
+// numeric parsers so "12x" or "1.5 junk" is rejected rather than truncated.
+inline bool dvsParseAtEnd(const char *end) {
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+        ++end;
+    }
+    return *end == '\0';
+}
+
+// Parse a whole token as a base-10 integer within [lo, hi]. Returns false (and
+// leaves *out untouched) on empty input, trailing garbage, or an out-of-range
+// value, so callers can reject bad input rather than coerce it to 0.
+inline bool dvsParseIntRange(const char *arg, long lo, long hi, long *out) {
+    if (arg == nullptr || arg[0] == '\0') {
+        return false;
+    }
+    char *end = nullptr;
+    const long v = strtol(arg, &end, 10);
+    if (end == arg || !dvsParseAtEnd(end) || v < lo || v > hi) {
+        return false;
+    }
+    if (out != nullptr) {
+        *out = v;
+    }
+    return true;
+}
+
+// Parse a whole token as a float. Returns false (leaving *out untouched) on
+// empty input or trailing garbage.
+inline bool dvsParseFloat(const char *arg, float *out) {
+    if (arg == nullptr || arg[0] == '\0') {
+        return false;
+    }
+    char *end = nullptr;
+    const float v = strtof(arg, &end);
+    if (end == arg || !dvsParseAtEnd(end)) {
+        return false;
+    }
+    if (out != nullptr) {
+        *out = v;
+    }
+    return true;
+}
+
+// Parse a control mode (manual|auto). Returns false on any other token.
+inline bool dvsParseMode(const char *arg, DvsControlMode *out) {
+    if (arg == nullptr) {
+        return false;
+    }
+    if (strcasecmp(arg, "manual") == 0) {
+        if (out != nullptr) {
+            *out = DVS_MODE_MANUAL;
+        }
+        return true;
+    }
+    if (strcasecmp(arg, "auto") == 0) {
+        if (out != nullptr) {
+            *out = DVS_MODE_AUTO;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Parse a profile selection (summer|winter|auto). Returns false on any other
+// token, so an unrecognised profile is rejected rather than defaulting to auto.
+inline bool dvsParseProfile(const char *arg, DvsProfileSel *out) {
+    if (arg == nullptr) {
+        return false;
+    }
+    if (strcasecmp(arg, "summer") == 0) {
+        if (out != nullptr) {
+            *out = DVS_PROFILE_SEL_SUMMER;
+        }
+        return true;
+    }
+    if (strcasecmp(arg, "winter") == 0) {
+        if (out != nullptr) {
+            *out = DVS_PROFILE_SEL_WINTER;
+        }
+        return true;
+    }
+    if (strcasecmp(arg, "auto") == 0) {
+        if (out != nullptr) {
+            *out = DVS_PROFILE_SEL_AUTO;
+        }
+        return true;
+    }
+    return false;
 }

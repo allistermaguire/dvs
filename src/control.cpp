@@ -200,12 +200,11 @@ void dvsControlAutoTick() {
         return;
     }
 
-    // Fail safe: a stale/absent roof or inside reading must not hold the fan on.
-    const bool roofFresh =
-        g_haveRoofTemp && (nowMs - g_roofTempMs) < DVS_TEMP_STALE_MS;
-    const bool insideFresh =
-        g_haveInsideTemp && (nowMs - g_insideTempMs) < DVS_TEMP_STALE_MS;
-    if (!roofFresh || !insideFresh) {
+    // Fail safe: a stale/absent roof or inside reading must not hold the fan on.    
+    const bool fresh = dvsProfileInputsFresh(
+        g_haveRoofTemp, nowMs - g_roofTempMs, g_haveInsideTemp,
+        nowMs - g_insideTempMs, DVS_TEMP_STALE_MS);
+    if (!fresh) {
         if (dvsControlGetPower()) {
             dvsControlSetPower(false);
             netPublishState();

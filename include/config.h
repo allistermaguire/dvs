@@ -34,6 +34,12 @@ static constexpr uint32_t DEFAULT_GAP_THRESHOLD_US = 3500;
 // Largest frame we will buffer before force-flushing.
 static constexpr size_t MAX_FRAME_LEN = 64;
 
+// Per-frame console tracing at boot: false = quiet (production), true = decode
+// and print every frame (a reverse-engineering aid). Lifecycle/error logs
+// (wifi/mqtt/err/auto) are unaffected. Toggle at runtime with the `decode`
+// command. MQTT still publishes all sniffed value regardless of this.
+static constexpr bool DVS_FRAME_TRACE_DEFAULT = false;
+
 // --- Known DVS registers -----------------------------------------------------
 enum DvsRegister : uint8_t {
     REG_DEADMAN     = 0x03, // NOT observed in live control captures (see below)
