@@ -28,6 +28,23 @@ static uint8_t proportionalBoost(float benefit, const DvsProfileConfig &cfg) {
     return (uint8_t)lroundf(frac * (float)(range > 0 ? range : 0));
 }
 
+// Winter heat-recovery boost: ramp from 0 (at recoverStartC of roof-minus-inside
+// differential) up to the full (maxSpeed - base) range (at recoverFullC) as the
+// roof air out-warms the house. "Similar" temperatures (a slightly negative
+// differential) still earn a modest boost; full speed needs a real warm roof.
+static uint8_t recoveryBoost(float delta, const DvsProfileConfig &cfg,
+                             uint8_t base) {
+    const float denom = cfg.recoverFullC - cfg.recoverStartC;
+    float frac = (denom > 0.0f) ? (delta - cfg.recoverStartC) / denom : 1.0f;
+    if (frac < 0.0f) {
+        frac = 0.0f;
+    } else if (frac > 1.0f) {
+        frac = 1.0f;
+    }
+    const int range = (int)cfg.maxSpeed - (int)base;
+    return (uint8_t)lroundf(frac * (float)(range > 0 ? range : 0));
+}
+
 uint8_t dvsProfileSpeed(const DvsProfileInputs &in, const DvsProfileConfig &cfg,
                         uint8_t curSpeed) {
     // Hysteresis: a stopped fan needs the (higher) deadbandOn benefit to start;
@@ -45,26 +62,15 @@ uint8_t dvsProfileSpeed(const DvsProfileInputs &in, const DvsProfileConfig &cfg,
         if (in.roofTempC < minSupply) {
             return 0;
         }
-        const float benefit = in.roofTempC - in.insideTempC; // >0 == free heat
-        const bool warmEnough = in.insideTempC >= cfg.comfortHighC;
-        if (in.moistureFloor) {
-            // Moisture-first: keep venting for condensation wherever the supply
-            // air is above the cold cutoff - even once the house is already warm
-            // (comfortHigh does NOT stop it; only the cold cutoff can). Add the
-            // free-heat boost only while below comfortHigh; at/above it hold the
-            // bare trickle so we still get ventilation for moisture without actively
-            // overheating.
-            const uint8_t boost = warmEnough ? 0 : proportionalBoost(benefit, cfg);
-            return clampSpeed((long)cfg.minSpeed + boost, cfg.minSpeed,
-                              cfg.maxSpeed);
+        // Moisture ventilation is the always-on baseline (the core job); heat
+        // recovery only speeds it up when there is warm roof air to harvest.
+        const uint8_t base = cfg.moistureBaseSpeed;
+        if (!in.heatRecovery || in.insideTempC >= cfg.comfortHighC) {
+            return base; // moisture only, or house already warm: hold baseline
         }
-        // Heat-only: back off once the house is already warm enough, and require 
-        // a genuine warming benefit (with hysteresis).
-        if (warmEnough || benefit < startStop) {
-            return 0;
-        }
-        const uint8_t boost = proportionalBoost(benefit, cfg);
-        return clampSpeed((long)cfg.minSpeed + boost, cfg.minSpeed, cfg.maxSpeed);
+        const float delta = in.roofTempC - in.insideTempC; // >0 == free heat
+        const uint8_t boost = recoveryBoost(delta, cfg, base);
+        return clampSpeed((long)base + boost, base, cfg.maxSpeed);
     }
 
     // Summer: free cooling with cool roof/night air; block hot midday roof air.

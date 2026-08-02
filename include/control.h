@@ -61,10 +61,11 @@ DvsProfileSel dvsControlGetProfile();
 // The profile actually in effect right now (AUTO resolved to summer/winter).
 DvsProfile dvsControlGetEffectiveProfile();
 
-// Winter moisture floor: keep a trickle of ventilation for condensation control
-// even when the roof air is not adding heat (down to the cold cutoff).
-void dvsControlSetMoistureFloor(bool on);
-bool dvsControlGetMoistureFloor();
+// Winter heat recovery: ramp the fan speed up above the moisture baseline to
+// harvest warm roof air when it is as warm as, or warmer than, the house. With
+// it off the winter fan just holds the low moisture-ventilation baseline.
+void dvsControlSetHeatRecovery(bool on);
+bool dvsControlGetHeatRecovery();
 
 // Feed the inside temperature (deg C), typically from a Home Assistant sensor
 // over MQTT. Records the value and a freshness timestamp.

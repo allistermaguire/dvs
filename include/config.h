@@ -138,11 +138,11 @@ static constexpr float DVS_PROFILE_DEADBAND_ON_C = 1.5f;
 static constexpr float DVS_PROFILE_DEADBAND_OFF_C = 0.5f;
 // Favourable differential at which the fan reaches maxSpeed.
 static constexpr float DVS_PROFILE_SPAN_C = 5.0f;
-// Winter: inside-tempature ceiling. In heat-only mode the fan stops once the
-// house reaches this; with the moisture floor on it only caps the free-heat
-// boost (the moisture trickle keeps running above it). Set above the ~20 C
-// central-heating target so free solar-warmed roof air can bank a few extra
-// degrees before the boost is capped.
+// Winter inside-temperature ceiling. Once the house reaches this the heat-
+// recovery boost is capped (the fan holds the moisture baseline) so we keep
+// ventilating for condensation without actively overheating. Set above the
+// ~20 C central-heating target so free solar-warmed roof air can bank a few
+// extra degrees before the boost is capped.
 static constexpr float DVS_PROFILE_COMFORT_HIGH_C = 24.0f;
 // Summer: stop once the house is already this cool (don't chill below sleeping).
 static constexpr float DVS_PROFILE_COMFORT_LOW_C = 18.0f;
@@ -158,17 +158,28 @@ static constexpr float DVS_PROFILE_MAX_SUPPLY_C = 24.0f;
 // out, the reading recovers, and it restarts - the classic on/off flap near the
 // cutoff (e.g. ~12 C). Stopping still requires the full cutoff to be crossed.
 static constexpr float DVS_PROFILE_SUPPLY_HYST_C = 1.5f;
+// Winter heat-recovery ramp (roof-minus-inside differential, deg C). The boost
+// begins around recoverStart (slightly negative so a roof "similar" to inside
+// still nudges the speed up) and reaches maxSpeed once the roof is recoverFull
+// warmer than the house. recoverFull is kept >= 4 C so full speed needs a
+// genuinely warm roof, not a marginal 1-2 C difference.
+static constexpr float DVS_PROFILE_RECOVER_START_C = -2.0f;
+static constexpr float DVS_PROFILE_RECOVER_FULL_C = 4.0f;
 // Proportional speed range used by the profiles (a gentle trickle .. boost).
 static constexpr uint8_t DVS_PROFILE_MIN_SPEED = 12;
+// Winter always-on moisture-ventilation baseline (slightly below minSpeed): the
+// low speed the fan holds purely for condensation control before heat recovery
+// boosts it.
+static constexpr uint8_t DVS_PROFILE_MOISTURE_SPEED = 10;
 static constexpr uint8_t DVS_PROFILE_MAX_SPEED = DVS_MAX_SPEED;
 // `auto` profile select: inside above this -> summer (cooling), below -> winter
 // (heating), with a small deadband inside profile.cpp to avoid flip-flopping.
 static constexpr float DVS_PROFILE_COMFORT_TARGET_C = 19.0f;
 
-// Winter "moisture floor" default: keep a trickle of ventilation going for
-// moisture/condensation control even when the roof air is not adding heat (as
-// long as it is above DVS_PROFILE_MIN_SUPPLY_C). Runtime-toggleable.
-static constexpr bool DVS_MOISTURE_FLOOR_DEFAULT = true;
+// Winter heat-recovery default: ON. Moisture ventilation always runs above the
+// cold cutoff; heat recovery additionally boosts the speed to harvest warm roof
+// air. Turn it off for a fixed low moisture-only baseline. Runtime-toggleable.
+static constexpr bool DVS_HEAT_RECOVERY_DEFAULT = true;
 
 // How often the auto-control tick recomputes and applies a target speed.
 static constexpr uint32_t DVS_CONTROL_TICK_MS = 10000;
@@ -184,8 +195,8 @@ static constexpr uint32_t MQTT_RECONNECT_MS = 5000;  // retry broker connect cad
 // for clients that (re)connect between commands.
 static constexpr uint32_t STATE_PUBLISH_MS  = 15000; // periodic state republish
 // On the first broker connect after boot, how long to wait for the retained
-// */state topics to arrive so mode/profile/tx/moisture can be restored before
-// the firmware resumes publishing its own state.
+// */state topics to arrive so mode/profile/tx/heat_recovery can be restored
+// before the firmware resumes publishing its own state.
 static constexpr uint32_t DVS_MQTT_RESTORE_WINDOW_MS = 1500;
 
 // --- MQTT topics --------------------------------------------------------------
@@ -201,15 +212,16 @@ static constexpr uint32_t DVS_MQTT_RESTORE_WINDOW_MS = 1500;
 #define MQTT_TOPIC_TX_SET        MQTT_TOPIC_BASE "/tx/set"       // in:  ON / OFF (send vs listen)
 #define MQTT_TOPIC_TX_STATE      MQTT_TOPIC_BASE "/tx/state"     // out: ON / OFF
 // Automatic ventilation control. Inside temperature is fed in (e.g. from a Home
-// Assistant sensor); mode/profile/moisture select the summer/winter behaviour.
+// Assistant sensor); mode/profile select the summer/winter behaviour and heat
+// recovery toggles the winter warm-roof speed boost.
 #define MQTT_TOPIC_INSIDE_SET     MQTT_TOPIC_BASE "/inside_temp/set"  // in:  deg C
 #define MQTT_TOPIC_INSIDE_STATE   MQTT_TOPIC_BASE "/inside_temp/state"  // out: deg C (echo)
 #define MQTT_TOPIC_MODE_SET       MQTT_TOPIC_BASE "/mode/set"         // in:  manual / auto
 #define MQTT_TOPIC_MODE_STATE     MQTT_TOPIC_BASE "/mode/state"       // out: manual / auto
 #define MQTT_TOPIC_PROFILE_SET    MQTT_TOPIC_BASE "/profile/set"      // in:  summer / winter / auto
 #define MQTT_TOPIC_PROFILE_STATE  MQTT_TOPIC_BASE "/profile/state"    // out: summer / winter / auto
-#define MQTT_TOPIC_MOISTURE_SET   MQTT_TOPIC_BASE "/moisture/set"     // in:  ON / OFF
-#define MQTT_TOPIC_MOISTURE_STATE MQTT_TOPIC_BASE "/moisture/state"   // out: ON / OFF
+#define MQTT_TOPIC_HEATREC_SET    MQTT_TOPIC_BASE "/heat_recovery/set"   // in:  ON / OFF
+#define MQTT_TOPIC_HEATREC_STATE  MQTT_TOPIC_BASE "/heat_recovery/state" // out: ON / OFF
 // Raw payload of the periodic status-block registers (0x01/0x06/0x12/0x13),
 // published as hex whenever the fan responds. Register hex is appended, e.g.
 // dvs/status/reg/06. Watch these to learn what triggers the block and how often.

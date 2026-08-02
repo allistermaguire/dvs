@@ -28,7 +28,7 @@ static uint8_t g_lastNonZeroSpeed = 0; // remembered speed for a bare "power on"
 static DvsControlMode g_controlMode = DVS_MODE_MANUAL;    // manual vs auto profile
 static DvsProfileSel g_profileSel = DVS_PROFILE_SEL_AUTO; // summer/winter/auto
 static DvsProfile g_effectiveProfile = DVS_PROFILE_WINTER; // AUTO resolved value
-static bool g_moistureFloor = DVS_MOISTURE_FLOOR_DEFAULT; // winter moisture vent
+static bool g_heatRecovery = DVS_HEAT_RECOVERY_DEFAULT;    // winter warm-roof boost
 static float g_insideTempC = 0.0f;        // last inside temp fed in (MQTT)
 static bool g_haveInsideTemp = false;
 static float g_roofTempC = 0.0f;          // last roof temp sniffed from the bus
@@ -38,11 +38,13 @@ static uint32_t g_lastControlTickMs = 0; // last auto-tick time (0 => act now)
 
 // Profile tuning (config.h boot defaults), built once rather than per tick.
 static const DvsProfileConfig g_profileCfg = {
-    DVS_PROFILE_DEADBAND_ON_C, DVS_PROFILE_DEADBAND_OFF_C,
-    DVS_PROFILE_SPAN_C,        DVS_PROFILE_COMFORT_HIGH_C,
-    DVS_PROFILE_COMFORT_LOW_C, DVS_PROFILE_MIN_SUPPLY_C,
-    DVS_PROFILE_MAX_SUPPLY_C,  DVS_PROFILE_SUPPLY_HYST_C,
-    DVS_PROFILE_MIN_SPEED,     DVS_PROFILE_MAX_SPEED,
+    DVS_PROFILE_DEADBAND_ON_C,    DVS_PROFILE_DEADBAND_OFF_C,
+    DVS_PROFILE_SPAN_C,           DVS_PROFILE_COMFORT_HIGH_C,
+    DVS_PROFILE_COMFORT_LOW_C,    DVS_PROFILE_MIN_SUPPLY_C,
+    DVS_PROFILE_MAX_SUPPLY_C,     DVS_PROFILE_SUPPLY_HYST_C,
+    DVS_PROFILE_RECOVER_START_C,  DVS_PROFILE_RECOVER_FULL_C,
+    DVS_PROFILE_MIN_SPEED,        DVS_PROFILE_MOISTURE_SPEED,
+    DVS_PROFILE_MAX_SPEED,
 };
 
 // Resolve the profile in effect (AUTO -> summer/winter by inside temp, with
@@ -161,12 +163,16 @@ void dvsControlSetProfile(DvsProfileSel sel) {
     g_profileSel = sel;
     g_effectiveProfile = controlResolveProfile(); // report state immediately
     g_lastControlTickMs = 0;                      // act on the change promptly
+    Serial.printf("[ok] profile=%s\n",
+                  sel == DVS_PROFILE_SEL_SUMMER   ? "summer"
+                  : sel == DVS_PROFILE_SEL_WINTER ? "winter"
+                                                  : "auto");
 }
 DvsProfileSel dvsControlGetProfile() { return g_profileSel; }
 DvsProfile dvsControlGetEffectiveProfile() { return g_effectiveProfile; }
 
-void dvsControlSetMoistureFloor(bool on) { g_moistureFloor = on; }
-bool dvsControlGetMoistureFloor() { return g_moistureFloor; }
+void dvsControlSetHeatRecovery(bool on) { g_heatRecovery = on; }
+bool dvsControlGetHeatRecovery() { return g_heatRecovery; }
 
 void dvsControlSetInsideTemp(float celsius) {
     g_insideTempC = celsius;
@@ -198,14 +204,18 @@ void dvsControlAutoTick() {
         return;
     }
 
-    // Fail safe: a stale/absent roof reading must not hold the fan on.    
+    // Fail safe: a stale/absent roof reading , or an inside remp we have never
+    // received, must not drive the fan. Only the rood is age-checked (it is
+    // bus-polled ~1s); the inside temp just has to exist - without it the profile
+    // maths would treat a missing reading as 0 C and command a bogus full boost.
     const bool fresh =
+        g_haveInsideTemp &&
         dvsProfileInputsFresh(g_haveRoofTemp, nowMs - g_roofTempMs, DVS_TEMP_STALE_MS);
     if (!fresh) {
         if (dvsControlGetPower()) {
             dvsControlSetPower(false);
             netPublishState();
-            Serial.println(F("[auto] temp stale -> fan off (fail-safe)"));
+            Serial.println(F("[auto] temp missing/stale -> fan off (fail-safe)"));
         }
         return;
     }
@@ -215,7 +225,7 @@ void dvsControlAutoTick() {
     DvsProfileInputs in;
     in.roofTempC = g_roofTempC;
     in.insideTempC = g_insideTempC;
-    in.moistureFloor = g_moistureFloor;
+    in.heatRecovery = g_heatRecovery;
     in.profile = g_effectiveProfile;
 
     const uint8_t target = dvsProfileSpeed(in, g_profileCfg, g_fanSpeed);

@@ -25,8 +25,8 @@ static uint32_t s_lastWifiAttempt = 0;
 static uint32_t s_lastMqttAttempt = 0;
 static uint32_t s_lastStatePublish = 0;
 
-// One-shot restore of mode/profile/tx/moisture from the retained */state topics
-// on the first connect after boot. While active we suspend our own state
+// One-shot restore of mode/profile/tx/heat_recovery from the retained */state
+// topics on the first connect after boot. While active we suspend our own state
 // publishing so the retained values aren't clobbered before we read them back.
 static bool s_restoreDone = false;
 static bool s_restoreActive = false;
@@ -48,12 +48,12 @@ void netPublishState() {
                   dvsControlGetMode() == DVS_MODE_AUTO ? "auto" : "manual", true);
     const DvsProfileSel sel = dvsControlGetProfile();
     s_mqtt.publish(MQTT_TOPIC_PROFILE_STATE,
-                  sel == DVS_PROFILE_SEL_SUMMER	  ? "summer"
-                  : sel == DVS_PROFILE_SEL_WINTER ? "winter"
-                  						          : "auto",
+                   sel == DVS_PROFILE_SEL_SUMMER    ? "summer"
+                   : sel == DVS_PROFILE_SEL_WINTER  ? "winter"
+                  						            : "auto",
                   true);
-    s_mqtt.publish(MQTT_TOPIC_MOISTURE_STATE,
-                  dvsControlGetMoistureFloor() ? "ON" : "OFF", true);
+    s_mqtt.publish(MQTT_TOPIC_HEATREC_STATE,
+                   dvsControlGetHeatRecovery() ? "ON" : "OFF", true);
     float inside;
     if (dvsControlGetInsideTemp(&inside)) {
         snprintf(buf, sizeof(buf), "%.1f", (double)inside);
@@ -87,8 +87,8 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
         } else if (strcmp(topic, MQTT_TOPIC_TX_STATE) == 0) {
             dvsControlSetTxEnabled(dvsParseOnOff(msg));
             return;
-        } else if (strcmp(topic, MQTT_TOPIC_MOISTURE_STATE) == 0) {
-            dvsControlSetMoistureFloor(dvsParseOnOff(msg));
+        } else if (strcmp(topic, MQTT_TOPIC_HEATREC_STATE) == 0) {
+            dvsControlSetHeatRecovery(dvsParseOnOff(msg));
             return;
         }
     }
@@ -123,8 +123,8 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
 			dvsControlSetProfile(sel);
 			netPublishState();
 		}
-	} else if (strcmp(topic, MQTT_TOPIC_MOISTURE_SET) == 0) {
-		dvsControlSetMoistureFloor(dvsParseOnOff(msg));
+	} else if (strcmp(topic, MQTT_TOPIC_HEATREC_SET) == 0) {
+		dvsControlSetHeatRecovery(dvsParseOnOff(msg));
 		netPublishState();
 	}
 }
@@ -193,11 +193,11 @@ static void publishDiscovery() {
 		HA_AVAIL "," HA_DEVICE "}",
 		true);
 
-	// Winter moisture-floor ventilation switch.
+	// Winter heat-recovery boost switch.
 	s_mqtt.publish(
-		HA_DISCOVERY_PREFIX "/switch/dvs/moisture/config",
-		"{\"name\":\"Moisture Ventilation\",\"uniq_id\":\"dvs_moisture\","
-		"\"cmd_t\":\"" MQTT_TOPIC_MOISTURE_SET "\",\"stat_t\":\"" MQTT_TOPIC_MOISTURE_STATE "\","
+		HA_DISCOVERY_PREFIX "/switch/dvs/heat_recovery/config",
+        "{\"name\":\"Heat Recovery\",\"uniq_id\":\"dvs_heat_recovery\","
+        "\"cmd_t\":\"" MQTT_TOPIC_HEATREC_SET "\",\"stat_t\":\"" MQTT_TOPIC_HEATREC_STATE "\","
 		"\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"ent_cat\":\"config\","
 		HA_AVAIL "," HA_DEVICE "}",
 		true);
@@ -250,7 +250,7 @@ static bool mqttConnect() {
 		s_mqtt.subscribe(MQTT_TOPIC_INSIDE_SET);
 		s_mqtt.subscribe(MQTT_TOPIC_MODE_SET);
 		s_mqtt.subscribe(MQTT_TOPIC_PROFILE_SET);
-		s_mqtt.subscribe(MQTT_TOPIC_MOISTURE_SET);
+		s_mqtt.subscribe(MQTT_TOPIC_HEATREC_SET);
         publishDiscovery();
         if (!s_restoreDone) {
             // First connect after boot: read the retained settings back before
@@ -258,7 +258,7 @@ static bool mqttConnect() {
             s_mqtt.subscribe(MQTT_TOPIC_MODE_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_PROFILE_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_TX_STATE);
-            s_mqtt.subscribe(MQTT_TOPIC_MOISTURE_STATE);
+            s_mqtt.subscribe(MQTT_TOPIC_HEATREC_STATE);
             s_restoreActive = true;
             s_restoreDeadline = millis() + DVS_MQTT_RESTORE_WINDOW_MS;
         } else {
@@ -322,7 +322,7 @@ void netLoop() {
         s_mqtt.unsubscribe(MQTT_TOPIC_MODE_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_PROFILE_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_TX_STATE);
-        s_mqtt.unsubscribe(MQTT_TOPIC_MOISTURE_STATE);
+        s_mqtt.unsubscribe(MQTT_TOPIC_HEATREC_STATE);
         netPublishState();
     }
 

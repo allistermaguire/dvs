@@ -125,11 +125,11 @@ static void printConfig() {
                                                           : "auto";
     float inside;
     const bool haveInside = dvsControlGetInsideTemp(&inside);
-    Serial.printf("[cfg] mode=%s profile=%s(->%s) moisture=%s inside=%s\n",
+    Serial.printf("[cfg] mode=%s profile=%s(->%s) heatrec=%s inside=%s\n",
                   dvsControlGetMode() == DVS_MODE_AUTO ? "auto" : "manual", profStr,
                   dvsControlGetEffectiveProfile() == DVS_PROFILE_SUMMER ? "summer"
                                                                         : "winter",
-                  dvsControlGetMoistureFloor() ? "on" : "off",
+                  dvsControlGetHeatRecovery() ? "on" : "off",
                   haveInside ? String(inside, 1).c_str() : "n/a");
 }
 
@@ -145,7 +145,7 @@ static void printHelp() {
     Serial.println(F("  speed <n>     set target fan speed 0..84"));
     Serial.println(F("  mode <manual|auto>    manual control vs auto profiles"));
     Serial.println(F("  profile <summer|winter|auto> select ventilation profile"));
-    Serial.println(F("  moisture [on|off]     winter moisture-floor ventilation"));
+    Serial.println(F("  heatrecovery [on|off]   winter warm-roof speed boost"));
     Serial.println(F("  inside <degC>         feed the inside temperature"));
     Serial.println(F("  status        print current configuration"));
     Serial.println(F("  help          show this help"));
@@ -386,26 +386,25 @@ static void handleCommand(const String &raw) {
         DvsProfileSel sel;
         if (dvsParseProfile(arg.c_str(), &sel)) {
             dvsControlSetProfile(sel);
-            Serial.printf("[ok] profile=%s\n", arg.c_str());
         } else {
             Serial.println(F("[err] usage: profile <summer|winter|auto>"));
             return;
         }
-    } else if (cmd.startsWith("moisture")) {
-        String arg = cmd.substring(8);
+    } else if (cmd.startsWith("heatrecovery")) {
+        String arg = cmd.substring(12);
         arg.trim();
         switch (dvsParseTriState(arg.c_str())) {
-            case DVS_TRI_ON: dvsControlSetMoistureFloor(true); break;
-            case DVS_TRI_OFF: dvsControlSetMoistureFloor(false); break;
+            case DVS_TRI_ON: dvsControlSetHeatRecovery(true); break;
+            case DVS_TRI_OFF: dvsControlSetHeatRecovery(false); break;
             case DVS_TRI_TOGGLE:
-                dvsControlSetMoistureFloor(!dvsControlGetMoistureFloor());
+                dvsControlSetHeatRecovery(!dvsControlGetHeatRecovery());
                 break;
             default:
-                Serial.println(F("[err] usage: moisture [on|off]"));
+                Serial.println(F("[err] usage: heatrecovery [on|off]"));
                 return;
         }
-        Serial.printf("[ok] moisture=%s\n",
-                      dvsControlGetMoistureFloor() ? "on" : "off");
+        Serial.printf("[ok] heatrec=%s\n",
+                      dvsControlGetHeatRecovery() ? "on" : "off");
     } else if (cmd.startsWith("inside")) {
         String arg = cmd.substring(6);
         arg.trim();

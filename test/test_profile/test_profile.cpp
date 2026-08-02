@@ -1,8 +1,9 @@
 // Host-side unit tests for the ventilation control profiles: `pio test -e native`.
 //
 // These exercise the pure decision logic in profile.cpp - no Arduino/bus. They
-// pin the moisture-first winter behaviour (still ventilate at ~13 C), the cold
-// and warm cutoffs, the summer free-cooling gates, hysteresis and auto-select.
+// pin the moisture-first winter behaviour (always ventilate at a basedline above 
+// the cold cutoff), the optional heat-recover boost, the summer free-cooling 
+// gates, hysteresis and auto-select.
 
 #include <unity.h>
 
@@ -18,21 +19,24 @@ static DvsProfileConfig cfg() {
     c.deadbandOnC = 1.5f;
     c.deadbandOffC = 0.5f;
     c.spanC = 5.0f;
-    c.comfortHighC = 21.0f;
+    c.comfortHighC = 24.0f;
     c.comfortLowC = 18.0f;
     c.minSupplyC = 12.0f;
     c.maxSupplyC = 24.0f;
     c.supplyHystC = 1.5f;
+    c.recoverStartC = -2.0f;
+    c.recoverFullC = 4.0f;
     c.minSpeed = 12;
+    c.moistureBaseSpeed = 10;
     c.maxSpeed = 84;
     return c;
 }
 
-static DvsProfileInputs winter(float roof, float inside, bool moisture) {
+static DvsProfileInputs winter(float roof, float inside, bool heatRecovery) {
     DvsProfileInputs in;
     in.roofTempC = roof;
     in.insideTempC = inside;
-    in.moistureFloor = moisture;
+    in.heatRecovery = heatRecovery;
     in.profile = DVS_PROFILE_WINTER;
     return in;
 }
@@ -41,61 +45,69 @@ static DvsProfileInputs summer(float roof, float inside) {
     DvsProfileInputs in;
     in.roofTempC = roof;
     in.insideTempC = inside;
-    in.moistureFloor = false;
+    in.heatRecovery = false;
     in.profile = DVS_PROFILE_SUMMER;
     return in;
 }
 
-// --- Winter: moisture floor -------------------------------------------------
+// --- Winter: moisture baseline + heat recovery -------------------------------
 
-void test_winter_moisture_runs_at_13C_not_adding_heat() {
-    // Roof 13 C, inside 19 C: not adding heat, but above the 12 C cutoff, so the
-    // moisture floor keeps a trickle going (matches the real unit's behaviour).
+void test_winter_moisture_baseline_above_cutoff() {
+    // Roof 13 C, inside 19 C: above the 12 C cutoff but too cold to recover heat,
+    // so the always-on moisture baseline runs (matches the real unit venting for
+    // condensation without adding heat).
     const uint8_t s = dvsProfileSpeed(winter(13.0f, 19.0f, true), cfg(), 0);
-    TEST_ASSERT_EQUAL_UINT8(12, s); // exactly minSpeed, no heating boost
+    TEST_ASSERT_EQUAL_UINT8(10, s); // moistureBaseSpeed, no heat-recovery boost
 }
 
-void test_winter_moisture_off_below_cold_cutoff() {
-    // Roof 11 C is below minSupply (12 C): too cold to start, fan off even with
-    // the moisture floor enabled (stopped fan uses the full cutoff).
+void test_winter_off_below_cold_cutoff() {
+    // Roof 11 C is below minSupply (12 C): too cold to supply, fan off even with
+    // heat recovery on (stopped fan uses the full cutoff).
     TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(11.0f, 19.0f, true), cfg(), 0));
 }
 
 void test_winter_supply_cutoff_hysteresis_no_flap() {
     // Roof 11.5 C: below minSupply (12 C) but within supplyHyst (1.5 C). A
-    // running fan (cur>0) keeps its trickle - it cooled its own reading below
-    // the cutoff and must not flap off; a stopped fan (cur=0) still stays off.
-    TEST_ASSERT_EQUAL_UINT8(12, dvsProfileSpeed(winter(11.5f, 19.0f, true), cfg(), 12));
+    // running fan (cur>0) keeps its moisture baseline - it cooled its own reading
+    // below the cutoff and must not flap off; a stopped fan (cur=0) stays off.
+    TEST_ASSERT_EQUAL_UINT8(10, dvsProfileSpeed(winter(11.5f, 19.0f, true), cfg(), 10));
     TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(11.5f, 19.0f, true), cfg(), 0));
     // Below the hysteresis band (10 C < 12 - 1.5): even a running fan stops.
-    TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(10.0f, 19.0f, true), cfg(), 12));
+    TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(10.0f, 19.0f, true), cfg(), 10));
 }
 
-void test_winter_moisture_runs_when_house_already_warm() {
-    // Moisture floor ON with inside >= comfortHigh (24 C): keep venting for
-    // condensation - comfortHigh does NOT stop it, it only caps the free-heat
-    // boost, so we hold the bare trickle (minSpeed) even though roof is warmer.
-    TEST_ASSERT_EQUAL_UINT8(12, dvsProfileSpeed(winter(26.0f, 24.0f, true), cfg(), 40));
-    // Moisture floor OFF at the same warm house: heat-only stops at comfortHigh.
-    TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(26.0f, 24.0f, false), cfg(), 40));
+void test_winter_heat_recovery_off_holds_baseline() {
+    // Heat recovery OFF with a warm roof (26 C vs 19 C): no boost, just hold the
+    // low moisture baseline.
+    TEST_ASSERT_EQUAL_UINT8(10, dvsProfileSpeed(winter(26.0f, 19.0f, false), cfg(), 40));
 }
 
-void test_winter_heat_only_no_floor_requires_benefit() {
-    // Moisture floor OFF, roof 13 C, inside 19 C: no warming benefit -> off.
-    TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(13.0f, 19.0f, false), cfg(), 0));
+void test_winter_comfort_high_caps_boost() {
+    // Inside >= comfortHigh (24 C): keep venting for moisture at the baseline but
+    // do not add the heat-recovery boost (avoid actively overheating).
+    TEST_ASSERT_EQUAL_UINT8(10, dvsProfileSpeed(winter(26.0f, 24.0f, true), cfg(), 40));
 }
 
-void test_winter_heating_boost_scales_with_benefit() {
-    // Roof 24 C, inside 19 C: benefit = 5 C == span -> full boost to maxSpeed.
-    const uint8_t s = dvsProfileSpeed(winter(24.0f, 19.0f, true), cfg(), 12);
+void test_winter_heat_recovery_similar_temp_boost() {
+    // Roof 20.2 C, inside 21.2 C: differential -1 C ("similar"). frac =
+    // (-1 - -2)/(4 - -2) = 1/6; boost = round(1/6 * 74) = 12 -> 10 + 12 = 22.
+    // Similar temps still nudge the speed up rather than sitting at the baseline.
+    const uint8_t s = dvsProfileSpeed(winter(20.2f, 21.2f, true), cfg(), 10);
+    TEST_ASSERT_EQUAL_UINT8(22, s);
+}
+
+void test_winter_heat_recovery_not_full_at_2C() {
+    // Roof 21 C, inside 19 C: differential +2 C. frac = (2 - -2)/6 = 0.667;
+    // boost = round(0.667 * 74) = 49 -> 59. A 2 C warm roof must NOT hit maxSpeed.
+    const uint8_t s = dvsProfileSpeed(winter(21.0f, 19.0f, true), cfg(), 10);
+    TEST_ASSERT_EQUAL_UINT8(59, s);
+    TEST_ASSERT_TRUE(s < 84);
+}
+
+void test_winter_heat_recovery_full_at_4C() {
+    // Roof 23 C, inside 19 C: differential +4 C == recoverFull -> maxSpeed.
+    const uint8_t s = dvsProfileSpeed(winter(23.0f, 19.0f, true), cfg(), 10);
     TEST_ASSERT_EQUAL_UINT8(84, s);
-}
-
-void test_winter_heating_partial_boost() {
-    // Roof 21.5 C, inside 19 C: benefit = 2.5 C. frac = (2.5-0.5)/(5-0.5) = 0.444.
-    // boost = round(0.444 * 72) = 32 -> 12 + 32 = 44.
-    const uint8_t s = dvsProfileSpeed(winter(21.5f, 19.0f, true), cfg(), 12);
-    TEST_ASSERT_EQUAL_UINT8(44, s);
 }
 
 // --- Summer: free cooling --------------------------------------------------
@@ -164,13 +176,14 @@ void test_stale_when_roof_too_old() {
 
 int main(int, char **) {
     UNITY_BEGIN();
-    RUN_TEST(test_winter_moisture_runs_at_13C_not_adding_heat);
-    RUN_TEST(test_winter_moisture_off_below_cold_cutoff);
+    RUN_TEST(test_winter_moisture_baseline_above_cutoff);
+    RUN_TEST(test_winter_off_below_cold_cutoff);
     RUN_TEST(test_winter_supply_cutoff_hysteresis_no_flap);
-    RUN_TEST(test_winter_moisture_runs_when_house_already_warm);
-    RUN_TEST(test_winter_heat_only_no_floor_requires_benefit);
-    RUN_TEST(test_winter_heating_boost_scales_with_benefit);
-    RUN_TEST(test_winter_heating_partial_boost);
+    RUN_TEST(test_winter_heat_recovery_off_holds_baseline);
+    RUN_TEST(test_winter_comfort_high_caps_boost);
+    RUN_TEST(test_winter_heat_recovery_similar_temp_boost);
+    RUN_TEST(test_winter_heat_recovery_not_full_at_2C);
+    RUN_TEST(test_winter_heat_recovery_full_at_4C);
     RUN_TEST(test_summer_cooling_with_cool_air);
     RUN_TEST(test_summer_blocks_hot_roof_air);
     RUN_TEST(test_summer_off_when_house_already_cool);

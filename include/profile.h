@@ -10,15 +10,17 @@
 // temperature (no tempering blend). Given that, control is a pure function of
 // the roof (supply) temperature and the in-home temperature:
 // 
-// WINTER (moisture-first): keep ventilating for moisture/condensation control
-//      whenever the supply air is above a cold cutoff (minSupply), even when it
-//      is not adding heat (the "moisture floor"); add a proportional speed boost
-//      on top when the roof air is actually warmer than inside (free heating).
-//      With the moisture floor on, the fan keeps a trickle going even once the
-//      house is warm (comfortHigh only caps the free-heat boost, it does not stop
-//      the fan); only the cold cutoff (minSupply) stops it. With the floor off
-//      (heat-only) it stops once the house is warm enough (comfortHigh) or the
-//      roof air is too cold.
+//  WINTER (moisture-first, optional heat recovery): ALWAYS ventilate for
+//      moisture/condensation control whenever the supply air is above a cold
+//      cutoff (minSupply), at a low baseline speed (moistureBaseSpeed). This is
+//      the unit's core job and needs no toggle - only the cold cutoff stops it.
+//      When heat recovery is enabled (the default) and the roof air is as warm as
+//      (or warmer than) the house, ramp the speed up proportionally to harvest
+//      that free heat: the boost starts around recoverStartC of differential and
+//      reaches maxSpeed once the roof is recoverFullC warmer than inside.
+//      comfortHigh caps the boost (hold the baseline) once the house is already
+//      warm, so we keep ventilating without actively overheating. With heat
+//      recovery off, the fan simply holds the moisture baseline.
 // 
 // SUMMER (free cooling): ventilate when the roof/night air is cooler than
 //      inside; block hot midday roof air above maxSupply and stop once the house
@@ -37,7 +39,7 @@ enum DvsProfile : uint8_t {
 struct DvsProfileInputs {
     float roofTempC;    // raw roof/outside supply-air temperature (deg C)
     float insideTempC;  // in-home temperature (deg C)
-    bool moistureFloor; // winter: keep venting for moisture down to minSupply
+    bool heatRecovery;  // winter: ramp speed up to harvest warm roof air
     DvsProfile profile; // active profile (summer or winter)
 };
 
@@ -51,7 +53,10 @@ struct DvsProfileConfig {
     float minSupplyC;   // winter: never supply raw roof air colder than this
     float maxSupplyC;   // summer: never supply raw roof air hotter than this
     float supplyHystC;  // slack below/above the supply cutoff for a RUNNING fan
-    uint8_t minSpeed;   // gentle trickle speed
+    float recoverStartC; // winter: roof-minus-inside where heat-recovery boost begins
+    float recoverFullC;  // winter: roof-minus-inside where boost reaches maxSpeed
+    uint8_t minSpeed;   // summer floor / gentle trickle speed
+    uint8_t moistureBaseSpeed; // winter: always-on moisture-ventilation baseline
     uint8_t maxSpeed;   // full/boost speed
 };
 

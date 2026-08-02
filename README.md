@@ -255,7 +255,7 @@ live data:
 | `speed <n>`   | Set target fan speed `0..84` – transmits                        |
 | `mode [manual\|auto]` | Manual control vs. automatic summer/winter profiles |
 | `profile [summer\|winter\|auto]` | Select the ventilation profile (`auto` picks by inside temp) |
-| `moisture [on\|off]` | Winter moisture-floor ventilation on/off/toggle |
+| `heatrecovery [on\|off]` | Winter warm-roof speed boost on/off/toggle           |
 | `inside <°C>` | Feed the inside temperature used by auto control |
 | `status` | Print the current configuration (incl. mode/profile/inside) |
 | `help` | List commands |
@@ -277,13 +277,16 @@ on the console.
 
 **Profiles.**
 
-- **Winter (moisture-first)** — keeps a trickle of ventilation for
-  moisture/condensation control whenever the roof air is above the cold cutoff
-  (`minSupply`), *even when it is not adding heat*; adds a proportional speed
-  boost on top when the roof is warmer than inside. Only the cold cutoff
-  (`minSupply`) stops it - once the house is warm (`comfortHigh`) the free-heat
-  boost is capped but the moisture trickle keeps running. (With the moisture
-  floor off it reverts to heat-only: stops at `comfortHigh` or with no benefit.)
+- **Winter (moisture-first, optional heat recovery)** - **always** ventilates
+  for moisture/condensation control whenever the roof air is above the cold
+  cutoff (`minSupply`), at a low baseline speed (`moistureBaseSpeed`). When
+  **heat recovery** is on (the default) and the roof is as warm as - or warmer
+  than - inside, it ramps the speed up proportionally to harvest that free heat:
+  the boost begins around a "similar" differential (`recoverStart`) and reaches
+  max once the roof is `recoverFull` (≥ 4 °C) warmer than inside. Once the house
+  is warm (`comfortHigh`) the boost is capped and the fan holds the moisture
+  baseline. With heat recovery off it just holds that baseline. Only the cold
+  cutoff (`minSupply`) stops it.
 - **Summer (free cooling)** — ventilates when the roof/night air is cooler than
   inside; blocks hot midday roof air above `maxSupply`, and stops once the house
   is already cool (`comfortLow`).
@@ -297,12 +300,17 @@ on the console.
    nothing*;
 2. `tx on` — in listen-only the controller is inert and the fan is left to the
    wall controller; and
-3. a **fresh** inside temperature (and roof temperature) — if either is older
-   than `DVS_TEMP_STALE_MS` the controller **fails safe to off**.
+3. a **fresh** roof temperature and an inside temperature received at least once
+   - if the sniffed roof reading is older than `DVS_TEMP_STALE_MS`, or no inside
+   temperature has ever arrivedd, the controller **fails safe to off**. The inside
+   temperature is not age-checked (Home Assistant publishes it on-change only, so
+   a steady house legitimately sends no updates) but it must exist - otherwise the
+   profile maths would read a missing value as 0 °C and command a bogus boost.
 
 It recomputes every `DVS_CONTROL_TICK_MS`. Example: `winter` at roof 7 °C (below
-the 12 °C floor) commands the fan **off**; above 12 °C the moisture floor holds
-`minSpeed`, climbing proportionally as the roof rises past the inside temperature.
+the 12 °C floor) commands the fan **off**; above 12 °C the moisture baseline
+holds `moistureBaseSpeed`, climbing proportionally (heat recovery) as the roof
+rises past the inside temperature toward `recoverFull`.
 
 **Setpoints** (boot defaults tuned for Wellington NZ; all in
 [`include/config.h`](include/config.h) and tunable live over MQTT/console):
@@ -310,14 +318,16 @@ the 12 °C floor) commands the fan **off**; above 12 °C the moisture floor hold
 | Setting | Default | Meaning |
 | -------- | -------: | -------- |
 | `DVS_PROFILE_COMFORT_TARGET_C` | 19 | `auto` summer/winter switch point |
-| `DVS_PROFILE_COMFORT_HIGH_C` | 24 | Winter: inside ceiling - caps the free-heat boost (moisture trickle still runs above it) |
+| `DVS_PROFILE_COMFORT_HIGH_C` | 24 | Winter: inside ceiling - caps the heat-recovery boost (moisture baseline still runs above it) |
 | `DVS_PROFILE_COMFORT_LOW_C` | 18 | Summer: stop once inside is this cool |
 | `DVS_PROFILE_MIN_SUPPLY_C` | 12 | Winter: never supply roof air colder than this |
 | `DVS_PROFILE_MAX_SUPPLY_C` | 24 | Summer: never supply roof air hotter than this |
-| `DVS_PROFILE_DEADBAND_ON_C` / `_OFF_C` | 1.5 / 0.5 | Start / stop hysteresis |
-| `DVS_PROFILE_SPAN_C` | 5 | Differential at which speed reaches max |
-| `DVS_PROFILE_MIN_SPEED` / `_MAX_SPEED` | 12 / 84 | Proportional speed range |
-| `DVS_MOISTURE_FLOOR_DEFAULT` | on | Winter moisture-floor ventilation |
+| `DVS_PROFILE_DEADBAND_ON_C` / `_OFF_C` | 1.5 / 0.5 | Summer start / stop hysteresis |
+| `DVS_PROFILE_SPAN_C` | 5 | Summer: differential at which speed reaches max |
+| `DVS_PROFILE_RECOVER_START_C` / `_FULL_C` | -2 / 4 | Winter heat-recovery ramp (roof - inside): boost start / full-speed differential |
+| `DVS_PROFILE_MIN_SPEED` / `_MAX_SPEED` | 12 / 84 | Summer proportional speed range |
+| `DVS_PROFILE_MOISTURE_SPEED` | 10 | Winter always-on moisture-ventilation baseline |
+| `DVS_HEAT_RECOVERY_DEFAULT` | on | Winter warm-roof speed boost |
 
 > The **Control model** section above describes the *original wall controller*
 > (Winter/Summer/Uniform/General, Retain Home Heat ON/OFF, airflow offset) as
@@ -363,8 +373,8 @@ The base topic is `dvs`:
 | `dvs/mode/state`        | out | `manual`/`auto`              | Current control mode (retained)                                            |
 | `dvs/profile/set`       | in  | `summer`/`winter`/`auto`     | Selected ventilation profile                                               |
 | `dvs/profile/state`     | out | `summer`/`winter`/`auto`     | Current profile (retained)                                                 |
-| `dvs/moisture/set`      | in  | `ON` / `OFF`                 | Winter moisture-floor ventilation                                          |
-| `dvs/moisture/state`    | out | `ON` / `OFF`                 | Moisture floor state (retained)                                            |
+| `dvs/heat_recovery/set`     | in  | `ON` / `OFF`             | Winter warm-roof speed boost                                               |
+| `dvs/heat_recovery/state`   | out | `ON` / `OFF`             | Heat-recovery state (retained)                                             |
 | `dvs/status/reg/NN`     | out | hex bytes                    | Raw payload of status register `0xNN` (`01`, `06`, `12`, `13`)             |
 
 State topics are (re)published immediately when a command is applied and again
@@ -381,7 +391,7 @@ device - no YAML required:
 - **sensors** for roof temperature and actual fan speed,
 - a **switch** for transmit mode (listen-only vs listen+send),
 - **selects** for control mode (`manual`/`auto`) and profile (`summer`/`winter`/`auto`),
-- a **switch** for winter moisture-floor ventilation,
+- a **switch** for winter heat recovery (warm-roof speed boost),
 - a **number** for the inside temperature fed into auto control,
 - **diagnostic sensors** for each status-block register (`0x01/0x06/0x12/0x13`).
 
