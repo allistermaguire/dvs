@@ -31,7 +31,6 @@ static DvsProfile g_effectiveProfile = DVS_PROFILE_WINTER; // AUTO resolved valu
 static bool g_moistureFloor = DVS_MOISTURE_FLOOR_DEFAULT; // winter moisture vent
 static float g_insideTempC = 0.0f;        // last inside temp fed in (MQTT)
 static bool g_haveInsideTemp = false;
-static uint32_t g_insideTempMs = 0;       // millis() of the last inside-temp update
 static float g_roofTempC = 0.0f;          // last roof temp sniffed from the bus
 static bool g_haveRoofTemp = false;
 static uint32_t g_roofTempMs = 0;         // millis() of the last roof-temp reading
@@ -172,7 +171,6 @@ bool dvsControlGetMoistureFloor() { return g_moistureFloor; }
 void dvsControlSetInsideTemp(float celsius) {
     g_insideTempC = celsius;
     g_haveInsideTemp = true;
-    g_insideTempMs = millis();
 }
 bool dvsControlGetInsideTemp(float *celsius) {
     if (!g_haveInsideTemp) {
@@ -200,10 +198,9 @@ void dvsControlAutoTick() {
         return;
     }
 
-    // Fail safe: a stale/absent roof or inside reading must not hold the fan on.    
-    const bool fresh = dvsProfileInputsFresh(
-        g_haveRoofTemp, nowMs - g_roofTempMs, g_haveInsideTemp,
-        nowMs - g_insideTempMs, DVS_TEMP_STALE_MS);
+    // Fail safe: a stale/absent roof reading must not hold the fan on.    
+    const bool fresh =
+        dvsProfileInputsFresh(g_haveRoofTemp, nowMs - g_roofTempMs, DVS_TEMP_STALE_MS);
     if (!fresh) {
         if (dvsControlGetPower()) {
             dvsControlSetPower(false);

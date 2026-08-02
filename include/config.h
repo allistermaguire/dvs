@@ -172,8 +172,8 @@ static constexpr bool DVS_MOISTURE_FLOOR_DEFAULT = true;
 
 // How often the auto-control tick recomputes and applies a target speed.
 static constexpr uint32_t DVS_CONTROL_TICK_MS = 10000;
-// Auto control fails safe to OFF if either the roof or the inside temperature is
-// older than this (a stale/absent reading must not silently hold the fan on).
+// Auto control fails safe to OFF if the roof temperature is older than this (a
+// stale/absent reading must not silently hold the fan on).
 static constexpr uint32_t DVS_TEMP_STALE_MS = 300000; // 5 min
 
 // --- Network / MQTT timing ----------------------------------------------------

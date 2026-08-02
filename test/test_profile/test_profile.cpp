@@ -147,21 +147,19 @@ void test_auto_holds_profile_in_deadband() {
 
 // --- Fail-safe freshness gate ----------------------------------------------
 
-void test_fresh_when_both_recent() {
-    // Both readings present and inside the stale window -> control allowed.
-    TEST_ASSERT_TRUE(dvsProfileInputsFresh(true, 1000, true, 2000, 300000));
+void test_fresh_when_roof_recent() {
+    // Roof reading present and inside the stale window -> control allowed.
+    TEST_ASSERT_TRUE(dvsProfileInputsFresh(true, 1000, 300000));
 }
 
-void test_stale_when_reading_missing() {
-    // A never-received reading (have == false) always fails safe, even at age 0.
-    TEST_ASSERT_FALSE(dvsProfileInputsFresh(false, 0, true, 0, 300000));
-    TEST_ASSERT_FALSE(dvsProfileInputsFresh(true, 0, false, 0, 300000));
+void test_stale_when_roof_missing() {
+    // A never-received roof reading (have == false) always fails safe, even at age 0.
+    TEST_ASSERT_FALSE(dvsProfileInputsFresh(false, 0, 300000));
 }
 
-void test_stale_when_reading_too_old() {
-    // Either reading at/older than the stale window fails safe.
-    TEST_ASSERT_FALSE(dvsProfileInputsFresh(true, 300000, true, 0, 300000));
-    TEST_ASSERT_FALSE(dvsProfileInputsFresh(true, 0, true, 400000, 300000));
+void test_stale_when_roof_too_old() {
+    // A Roof reading at/older than the stale window fails safe.
+    TEST_ASSERT_FALSE(dvsProfileInputsFresh(true, 300000, 300000));
 }
 
 int main(int, char **) {
@@ -180,8 +178,8 @@ int main(int, char **) {
     RUN_TEST(test_auto_selects_summer_when_warm);
     RUN_TEST(test_auto_selects_winter_when_cool);
     RUN_TEST(test_auto_holds_profile_in_deadband);
-    RUN_TEST(test_fresh_when_both_recent);
-    RUN_TEST(test_stale_when_reading_missing);
-    RUN_TEST(test_stale_when_reading_too_old);
+    RUN_TEST(test_fresh_when_roof_recent);
+    RUN_TEST(test_stale_when_roof_missing);
+    RUN_TEST(test_stale_when_roof_too_old);
     return UNITY_END();
 }

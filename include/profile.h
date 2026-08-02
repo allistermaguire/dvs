@@ -67,8 +67,7 @@ uint8_t dvsProfileSpeed(const DvsProfileInputs &in, const DvsProfileConfig &cfg,
 DvsProfile dvsProfileAuto(float insideTempC, float comfortTargetC,
                           DvsProfile current);
 
-// Auto-control fail-safe gate. The fan may only be driven when BOTH the roof and
-// inside readings exist and are fresher than staleMs; otherwise control must
-// fail safe to OFF. Kept pure (ages passed in) so it can be tested off-target.
-bool dvsProfileInputsFresh(bool haveRoof, uint32_t roofAgeMs, bool haveInside,
-                           uint32_t insideAgeMs, uint32_t staleMs);
+// Auto-control fail-safe gate. The fan may only be driven when the roof readings
+// exists and is fresher than staleMs; otherwise control must fail safe to OFF.
+// Kept pure (ages passed in) so it can be tested off-target.
+bool dvsProfileInputsFresh(bool haveRoof, uint32_t roofAgeMs, uint32_t staleMs);
