@@ -32,6 +32,20 @@ static bool s_restoreDone = false;
 static bool s_restoreActive = false;
 static uint32_t s_restoreDeadline = 0;
 
+// Publish the currect boost state (minutes remaining + on/off). Non-retained:
+// boost is transient and must default off after a power cycle, so no value is
+// left on the broker to linger as ON while the device is offline.
+static void publishBoostState() {
+    if (!s_mqtt.connected()) {
+        return;
+    }
+    const uint16_t remaining = dvsControlBoostRemainingMin();
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%u", (unsigned)remaining);
+    s_mqtt.publish(MQTT_TOPIC_BOOST_STATE, buf, false);
+    s_mqtt.publish(MQTT_TOPIC_BOOST_PWR_STATE, remaining > 0 ? "ON" : "OFF", false);
+}
+
 void netPublishState() {
     if (!s_mqtt.connected()) {
         return;
@@ -54,11 +68,7 @@ void netPublishState() {
                   true);
     s_mqtt.publish(MQTT_TOPIC_HEATREC_STATE,
                    dvsControlGetHeatRecovery() ? "ON" : "OFF", true);
-    // Boost is transient (minutes left), so publish it non-retained.
-    snprintf(buf, sizeof(buf), "%u", (unsigned)dvsControlBoostRemainingMin());
-    s_mqtt.publish(MQTT_TOPIC_BOOST_STATE, buf, false);
-    s_mqtt.publish(MQTT_TOPIC_BOOST_PWR_STATE, 
-                   dvsControlGetPower() ? "ON" : "OFF", true);
+    publishBoostState();
     float inside;
     if (dvsControlGetInsideTemp(&inside)) {
         snprintf(buf, sizeof(buf), "%.1f", (double)inside);
@@ -138,7 +148,7 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
             netPublishState();
         }
     } else if (strcmp(topic, MQTT_TOPIC_BOOST_PWR_SET) == 0) {
-        dvsControlSetBoost(dvsParseOnOff(msg) ? DVS_BOOST_MAX_MINUTES : 0);
+        dvsControlSetBoost(dvsParseOnOff(msg) ? DVS_BOOST_DEFAULT_MINUTES : 0);
         netPublishState();
     }
 }
@@ -291,6 +301,7 @@ static bool mqttConnect() {
         s_mqtt.subscribe(MQTT_TOPIC_BOOST_SET);
         s_mqtt.subscribe(MQTT_TOPIC_BOOST_PWR_SET);
         publishDiscovery();
+        publishBoostState();
         if (!s_restoreDone) {
             // First connect after boot: read the retained settings back before
             // publishing our own (default) state over the top of them.

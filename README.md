@@ -398,7 +398,7 @@ The base topic is `dvs`:
 | `dvs/boost/set`         | in  | `240`                        | Run at full speed for N minutes (`0` cancels)                              |
 | `dvs/boost/state`       | out | `240`                        | Boost minutes remaining (`0` = off, not retained)                          |
 | `dvs/boost/power/set`   | in  | `ON` / `OFF`                 | Boost on (default duration) / off - toggle for HomeKit/Alexa               |
-| `dvs/boost/power/state` | out | `ON` / `OFF`                 | Whether a boost is currently active (retained)                             |
+| `dvs/boost/power/state` | out | `ON` / `OFF`                 | Whether a boost is currently active (not retained - defaults off after a power cycle)                             |
 | `dvs/status/reg/NN`     | out | hex bytes                    | Raw payload of status register `0xNN` (`01`, `06`, `12`, `13`)             |
 
 State topics are (re)published immediately when a command is applied and again
