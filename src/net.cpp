@@ -54,6 +54,11 @@ void netPublishState() {
                   true);
     s_mqtt.publish(MQTT_TOPIC_HEATREC_STATE,
                    dvsControlGetHeatRecovery() ? "ON" : "OFF", true);
+    // Boost is transient (minutes left), so publish it non-retained.
+    snprintf(buf, sizeof(buf), "%u", (unsigned)dvsControlBoostRemainingMin());
+    s_mqtt.publish(MQTT_TOPIC_BOOST_STATE, buf, false);
+    s_mqtt.publish(MQTT_TOPIC_BOOST_PWR_STATE, 
+                   dvsControlGetPower() ? "ON" : "OFF", true);
     float inside;
     if (dvsControlGetInsideTemp(&inside)) {
         snprintf(buf, sizeof(buf), "%.1f", (double)inside);
@@ -126,7 +131,16 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
 	} else if (strcmp(topic, MQTT_TOPIC_HEATREC_SET) == 0) {
 		dvsControlSetHeatRecovery(dvsParseOnOff(msg));
 		netPublishState();
-	}
+	} else if (strcmp(topic, MQTT_TOPIC_BOOST_SET) == 0) {
+        long v;
+        if (dvsParseIntRange(msg, 0, DVS_BOOST_MAX_MINUTES, &v)) {
+            dvsControlSetBoost((uint16_t)v);
+            netPublishState();
+        }
+    } else if (strcmp(topic, MQTT_TOPIC_BOOST_PWR_SET) == 0) {
+        dvsControlSetBoost(dvsParseOnOff(msg) ? DVS_BOOST_MAX_MINUTES : 0);
+        netPublishState();
+    }
 }
 
 // Publish Home Assistant MQTT discovery configs (retained) so HA auto-creates a
@@ -139,10 +153,13 @@ static void publishDiscovery() {
     char buf[512];
 
     // Fan: on/off via power topics, percentage via speed topics (range 1..max).
+    // Preset modes: auto/manual via mode topics.
     snprintf(buf, sizeof(buf),
              "{\"name\":\"Ventilation\",\"uniq_id\":\"dvs_fan\","
              "\"cmd_t\":\"" MQTT_TOPIC_POWER_SET "\",\"stat_t\":\"" MQTT_TOPIC_POWER_STATE "\","
              "\"pct_cmd_t\":\"" MQTT_TOPIC_SPEED_SET "\",\"pct_stat_t\":\"" MQTT_TOPIC_SPEED_STATE "\","
+             "\"pr_mode_cmd_t\":\"" MQTT_TOPIC_MODE_SET "\",\"pr_mode_stat_t\":\"" MQTT_TOPIC_MODE_STATE "\","
+             "\"preset_modes\":[\"manual\",\"auto\"],"
              "\"spd_rng_min\":1,\"spd_rng_max\":%d,\"pl_on\":\"ON\",\"pl_off\":\"OFF\","
              HA_AVAIL "," HA_DEVICE "}",
              DVS_MAX_SPEED);
@@ -212,6 +229,26 @@ static void publishDiscovery() {
 		HA_AVAIL "," HA_DEVICE "}",
 		true);
 
+    // Timed full-speed boost (minutes; 0 = off). State shows minutes remaining.
+    snprintf(buf, sizeof(buf),
+            "{\"name\":\"Boost\",\"uniq_id\":\"dvs_boost\","
+            "\"cmd_t\":\"" MQTT_TOPIC_BOOST_SET "\",\"stat_t\":\"" MQTT_TOPIC_BOOST_STATE "\","
+            "\"min\":0,\"max\":%u,\"step\":30,\"unit_of_meas\":\"min\","
+            "\"ic\":\"mdi:fan-plus\",\"mode\":\"box\","
+            HA_AVAIL "," HA_DEVICE "}",
+            (unsigned)DVS_BOOST_MAX_MINUTES);
+    s_mqtt.publish(HA_DISCOVERY_PREFIX "/number/dvs/boost/config", buf, true);
+
+    // Simple boost on/off switch (bridges to HomeKit/Alexa as a toggle). ON runs
+    // a boost of DVS_BOOST_DEFAULT_MINUTES; it reverts to OFF when the timer ends.
+    s_mqtt.publish(
+        HA_DISCOVERY_PREFIX "/switch/dvs/boost/config",
+        "{\"name\":\"Boost Switch\",\"uniq_id\":\"dvs_boost_sw\","
+        "\"cmd_t\":\"" MQTT_TOPIC_BOOST_PWR_SET "\",\"stat_t\":\"" MQTT_TOPIC_BOOST_PWR_STATE "\","
+        "\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"ic\":\"mdi:fan-plus\","
+        HA_AVAIL "," HA_DEVICE "}",
+        true);
+
     // Diagnostic sensors for each status-block register.
     for (uint8_t r : DVS_STATUS_REGS) {
         char topic[64];
@@ -251,6 +288,8 @@ static bool mqttConnect() {
 		s_mqtt.subscribe(MQTT_TOPIC_MODE_SET);
 		s_mqtt.subscribe(MQTT_TOPIC_PROFILE_SET);
 		s_mqtt.subscribe(MQTT_TOPIC_HEATREC_SET);
+        s_mqtt.subscribe(MQTT_TOPIC_BOOST_SET);
+        s_mqtt.subscribe(MQTT_TOPIC_BOOST_PWR_SET);
         publishDiscovery();
         if (!s_restoreDone) {
             // First connect after boot: read the retained settings back before

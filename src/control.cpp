@@ -13,6 +13,7 @@
 
 #include <Arduino.h>
 
+#include "boost.h"
 #include "bus.h"
 #include "config.h"
 #include "control.h"
@@ -22,7 +23,8 @@
 static bool g_txEnabled = DVS_TX_ENABLED_DEFAULT; // false => listen-only
 static bool g_fanPower = false;           // true while we intend the fan to run
 static uint8_t g_fanSpeed = 0;            // last commanded target speed (0..84)
-static uint8_t g_lastNonZeroSpeed = 0; // remembered speed for a bare "power on"
+static uint8_t g_lastNonZeroSpeed = 0;    // remembered speed for a bare "power on"
+static uint32_t g_boostUntilMs = 0;       // full-speed boost deadline (0 => none)
 
 // --- Auto ventilation control state ------------------------------------------
 static DvsControlMode g_controlMode = DVS_MODE_MANUAL;    // manual vs auto profile
@@ -146,6 +148,36 @@ void dvsControlReportRoofTemp(float celsius) {
     g_roofTempC = celsius;
     g_roofTempMs = millis();
     g_haveRoofTemp = true;
+}
+
+// ---- Timed boost (declared in control.h; pure helpers in boost.h) ------------
+void dvsControlSetBoost(uint16_t minutes) {
+    if (minutes == 0) {
+        g_boostUntilMs = 0;
+        Serial.println(F("[ok] boost off"));
+        return;
+    }
+    g_boostUntilMs = millis() + (uint32_t)minutes * 60000UL;
+    Serial.printf("[ok] boost=%u min -> full speed\n", (unsigned)minutes);
+}
+
+uint16_t dvsControlBoostRemainingMin() {
+    return dvsBoostRemainingMin(millis(), g_boostUntilMs);
+}
+
+uint8_t dvsControlGetTxSpeed() {
+    return (dvsBoostTxSpeed(dvsBoostActive(millis(), g_boostUntilMs), g_fanPower,
+                           g_fanSpeed, DVS_MAX_SPEED));
+}
+
+bool dvsControlBoostTick() {
+    // Deadline set but no longer active => it just reached its end.
+    if (g_boostUntilMs != 0 && !dvsBoostActive(millis(), g_boostUntilMs)) {
+        g_boostUntilMs = 0;
+        Serial.println(F("[auto] boost expired"));
+        return true;
+    }
+    return false;
 }
 
 // --- Automatic ventilation control (declared in control.h) -------------------

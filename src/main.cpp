@@ -131,6 +131,8 @@ static void printConfig() {
                                                                         : "winter",
                   dvsControlGetHeatRecovery() ? "on" : "off",
                   haveInside ? String(inside, 1).c_str() : "n/a");
+    Serial.printf("[cfg] boost=%u min remaining\n",
+                  (unsigned)dvsControlBoostRemainingMin());
 }
 
 static void printHelp() {
@@ -147,6 +149,7 @@ static void printHelp() {
     Serial.println(F("  profile <summer|winter|auto> select ventilation profile"));
     Serial.println(F("  heatrecovery [on|off]   winter warm-roof speed boost"));
     Serial.println(F("  inside <degC>         feed the inside temperature"));
+    Serial.println(F("  boost <min|off>       run at full speed for N minutes"));
     Serial.println(F("  status        print current configuration"));
     Serial.println(F("  help          show this help"));
 }
@@ -415,6 +418,20 @@ static void handleCommand(const String &raw) {
         } else {
             Serial.printf("[err] usage: inside <degC>");
         }
+    } else if (cmd.startsWith("boost")) {
+        String arg = cmd.substring(5);
+        arg.trim();
+        if (arg.equalsIgnoreCase("off")) {
+            dvsControlSetBoost(0);
+        } else {
+            long v;
+            if (dvsParseIntRange(arg.c_str(), 0, DVS_BOOST_MAX_MINUTES, &v)) {
+                dvsControlSetBoost((uint16_t)v);
+            } else {
+                Serial.printf("[err] usage: boost <0..%u|off>\n",
+                              (unsigned)DVS_BOOST_MAX_MINUTES);
+            }
+        }
     } else if (cmd == "status") {
         printConfig();
     } else if (cmd == "help") {
@@ -471,7 +488,7 @@ static void pollSendRequest() {
     if (g_pollReg == REG_TEMP) {
         dvsBusSend(REG_TEMP, nullptr, 0);           // roof-temperature query
     } else {
-        const uint8_t sp = dvsControlGetSpeed();
+        const uint8_t sp = dvsControlGetTxSpeed();
         dvsBusSend(REG_FAN_SPEED, &sp, 1);          // speed target / keepalive
     }
 }
@@ -564,6 +581,11 @@ void loop() {
     // Auto ventilation control: recompute a target speed from the roof and
     // inside temperatures on its own cadence (no-op in manual mode / listen-only).
     dvsControlAutoTick();
+
+    // Expire a lapsed full-speed boost and republish state when it ends.
+    if (dvsControlBoostTick()) {
+        netPublishState();
+    }
 
     // Close the current frame once the bus has been idle past the threshold. The
     // FIFO is already drained above, so this now reflects a real on-bus idle gap

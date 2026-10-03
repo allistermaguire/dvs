@@ -77,6 +77,20 @@ bool dvsControlGetInsideTemp(float *celsius);
 // value and a freshness timestamp for the auto-control fail-safe.
 void dvsControlReportRoofTemp(float celsius);
 
+// ---- Timed boost -----------------------------------------------------------
+// Drive the fan to full speed for `minutes` (0 cancels), overlaid on the current
+// manual/auto target and expiring automatically. Only reaches the bus while the
+// fan is powered and transmit is enabled.
+void dvsControlSetBoost(uint16_t minutes);
+// Minutes remaining on an active boost, rounded up (0 when inactive).
+uint16_t dvsControlBoostRemainingMin();
+// The speed to transmit right now: full speed while a boost is active (and the
+// fan is powered), otherwise the commanded speed. Used by the bus poll cycle.
+uint8_t dvsControlGetTxSpeed();
+// Clear a boost whose deadline has passed; returns true if it just expired so
+// the caller can republish state.
+bool dvsControlBoostTick();
+
 // Run one non-blocking step of the auto-control loop. Call from loop(); it only
 // acts on its own DVS_CONTROL_TICK_MS cadence and only in auto mode.
 void dvsControlAutoTick();

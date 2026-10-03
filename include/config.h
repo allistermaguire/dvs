@@ -122,6 +122,17 @@ static constexpr bool DVS_TX_ENABLED_DEFAULT = false;
 // seen for this long (a genuine wall-off still turns off after the window).
 static constexpr uint32_t DVS_TARGET_OFF_DEBOUNCE_MS = 5000;
 
+// ---- Timed boost -----------------------------------------------------------
+// User-triggered override that drives the fan to full speed (DVS_MAX_SPEED) for
+// a fixed number of minutes, then expires on its own (0 cancels). Overlaid on
+// the manual/auto target; only reaches the bus while the fan is powered and
+// transmit is enabled. Requests longer than this are rejected.
+static constexpr uint16_t DVS_BOOST_MAX_MINUTES = 240;
+// Duration used when boost is switched on via the simple ON/OFF switch (the HA
+// switch / HomeKit / Alexa path, which has no duration field). The number entity
+// and `boost <min>` command still set an explicit duration.
+static constexpr uint16_t DVS_BOOST_DEFAULT_MINUTES = 60;
+
 // --- Automatic ventilation profiles (summer / winter) ---
 // When the control mode is `auto` (and transmit is enabled) the firmware acts on
 // the roof (supply) temperature sniffed from the bus and an inside temperature
@@ -225,6 +236,13 @@ static constexpr uint32_t DVS_MQTT_RESTORE_WINDOW_MS = 1500;
 #define MQTT_TOPIC_PROFILE_STATE  MQTT_TOPIC_BASE "/profile/state"    // out: summer / winter / auto
 #define MQTT_TOPIC_HEATREC_SET    MQTT_TOPIC_BASE "/heat_recovery/set"   // in:  ON / OFF
 #define MQTT_TOPIC_HEATREC_STATE  MQTT_TOPIC_BASE "/heat_recovery/state" // out: ON / OFF
+// Timed full-speed boost: set minutes (0 = cancel), state echoes minutes left.
+#define MQTT_TOPIC_BOOST_SET        MQTT_TOPIC_BASE "/boost/set"        // in:  minutes (0 = cancel)
+#define MQTT_TOPIC_BOOST_STATE      MQTT_TOPIC_BASE "/boost/state"      // out: minutes remaining
+// Simple ON/OFF boost switch (for HA switch -> HomeKit/Alexa). ON runs a boost
+// of DVS_BOOST_DEFAULT_MINUTES; OFF cancels. State is ON while a boost is active.
+#define MQTT_TOPIC_BOOST_PWR_SET    MQTT_TOPIC_BASE "/boost/power/set"   // in:  ON / OFF
+#define MQTT_TOPIC_BOOST_PWR_STATE  MQTT_TOPIC_BASE "/boost/power/state" // out: ON / OFF
 // Raw payload of the periodic status-block registers (0x01/0x06/0x12/0x13),
 // published as hex whenever the fan responds. Register hex is appended, e.g.
 // dvs/status/reg/06. Watch these to learn what triggers the block and how often.

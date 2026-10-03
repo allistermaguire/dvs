@@ -186,6 +186,7 @@ include/
   bus.h                         RS485 transmit seam (dvsBusSend / poll-cycle reset)
   parse.h                       Shared argument parsers: on/off/toggle + strict numeric/mode/profile (console + MQTT)
   profile.h                     Pure summer/winter speed-vs-temperature logic + fail-safe freshness gate
+  boost.h                       Pure timed-boost helpers (active window / remaining / tx-speed overlay)
   net.h                         Wi-Fi = MQTT bridge API
   secrets.h                     Wi-Fi / MQTT credentials (git-ignored; copy the .example)
   secrets.h.example             Template for secrets.h
@@ -193,6 +194,7 @@ src/
   crc16.cpp                     CRC implementation (switchable variant)
   frame.cpp                     Frame decoding / line formatting / frame building
   profile.cpp                   Ventilation profile maths (pure, host-tested)
+  boost.cpp                     Timed-boost decision logic (pure, host-tested)
   control.cppp                  Fan control + auto-ventilation policy (Arduino only)
   net.cpp                       Wi-Fi + MQTT client (esp32 only)
   main.cpp                      Sniffer loop + USB console + RS485 bus/transmit (Arduino only)
@@ -200,6 +202,7 @@ test/
   test_crc/test_crc.cpp         Host-side CRC unit tests (Unity)
   test_profile/test_profile.cpp Host-side profile-logic + fail-safe tests (Unity)
   test_parse/test_parse.cpp     Host-side argument-parser tests (Unity)
+  test_boost/test_boost.cpp     Host-side timed-boost logic tests (Unity)
 ```
 
 ## Building & flashing
@@ -257,6 +260,7 @@ live data:
 | `profile [summer\|winter\|auto]` | Select the ventilation profile (`auto` picks by inside temp) |
 | `heatrecovery [on\|off]` | Winter warm-roof speed boost on/off/toggle           |
 | `inside <°C>` | Feed the inside temperature used by auto control |
+| `boost <min\|off>` | Run the fan at full speed for N minutes (`off`/`0` cancels) |
 | `status` | Print the current configuration (incl. mode/profile/inside) |
 | `help` | List commands |
 
@@ -334,6 +338,22 @@ rises past the inside temperature toward `recoverFull`.
 > reverse-engineered from captures — it is background, not what this firmware's
 > `auto` mode implements.
 
+### Boost
+
+A timed override that drives the fan to full speed (`DVS_MAX_SPEED`, `84`) for a
+fixed number of minutes, then expires on its own - the equivalent of the wall
+controller's **Fan Boost**. Trigger it with `boost <minutes>` on the console or
+the `dvs/boost/set` topic (e.g. `30`, `60`, `120`); `boost off` or `0` cancels.
+It overlays whatever manual/auto target is in effect, so when it expires the fan
+returns to that target. Boost only reaches the bus while the fan is **powered**
+and **transmit is on**, and it is intentionally not persisted across a reboot.
+
+For voice assistants there is also a plain on/off **boost switch**
+(`dvs/boost/power/set`): turning it on runs a boost of `DVS_BOOST_DEFAULT_MINUTES`
+(default 60) and it reverts to off when the timer ends. Because it is a Home
+Assistant **switch**, it bridges cleanly to HomeKit and Alexa as a toggle, unlike
+the minutes **number** entity.
+
 ## Wi-Fi & MQTT control
 
 With `include/secrets.h` filled in, the firmware joins your Wi-Fi (station mode)
@@ -375,6 +395,10 @@ The base topic is `dvs`:
 | `dvs/profile/state`     | out | `summer`/`winter`/`auto`     | Current profile (retained)                                                 |
 | `dvs/heat_recovery/set`     | in  | `ON` / `OFF`             | Winter warm-roof speed boost                                               |
 | `dvs/heat_recovery/state`   | out | `ON` / `OFF`             | Heat-recovery state (retained)                                             |
+| `dvs/boost/set`         | in  | `240`                        | Run at full speed for N minutes (`0` cancels)                              |
+| `dvs/boost/state`       | out | `240`                        | Boost minutes remaining (`0` = off, not retained)                          |
+| `dvs/boost/power/set`   | in  | `ON` / `OFF`                 | Boost on (default duration) / off - toggle for HomeKit/Alexa               |
+| `dvs/boost/power/state` | out | `ON` / `OFF`                 | Whether a boost is currently active (retained)                             |
 | `dvs/status/reg/NN`     | out | hex bytes                    | Raw payload of status register `0xNN` (`01`, `06`, `12`, `13`)             |
 
 State topics are (re)published immediately when a command is applied and again
@@ -393,6 +417,8 @@ device - no YAML required:
 - **selects** for control mode (`manual`/`auto`) and profile (`summer`/`winter`/`auto`),
 - a **switch** for winter heat recovery (warm-roof speed boost),
 - a **number** for the inside temperature fed into auto control,
+- a **number** for the timed full-speed boost (minues `0` = off),
+- a **switch** for boost on/off (default duration), which brdiges to HomeKit/Alexa as a toggle,
 - **diagnostic sensors** for each status-block register (`0x01/0x06/0x12/0x13`).
 
 Availability follows the `dvs/status` LWT, so entities show *unavailable* when the
