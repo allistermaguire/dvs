@@ -20,7 +20,7 @@ static constexpr int RS485_TX_PIN = 17;
 
 // MAX3485 DE + RE tied together to this GPIO. LOW = listen-only
 // (driver disabled, receiver enabled). Kept on a GPIO so TX can be added later.
-static constexpr int RS485_DE_RE_PIN = 4;
+static constexpr int RS485_DE_RE_PIN = 21;
 
 // --- Serial line settings ----------------------------------------------------
 static constexpr uint32_t USB_BAUD = 115200; // debug/monitor console
@@ -157,21 +157,24 @@ static constexpr float DVS_PROFILE_MAX_SUPPLY_C = 24.0f;
 // roof-temp reading, dipping it under the cutoff; without slack the fan cuts
 // out, the reading recovers, and it restarts - the classic on/off flap near the
 // cutoff (e.g. ~12 C). Stopping still requires the full cutoff to be crossed.
-static constexpr float DVS_PROFILE_SUPPLY_HYST_C = 1.5f;
+static constexpr float DVS_PROFILE_SUPPLY_HYST_C = 2.0f;
 // Winter heat-recovery ramp (roof-minus-inside differential, deg C). The boost
 // begins around recoverStart (slightly negative so a roof "similar" to inside
 // still nudges the speed up) and reaches maxSpeed once the roof is recoverFull
-// warmer than the house. recoverFull is kept >= 4 C so full speed needs a
+// warmer than the house. recoverFull is kept >= 8 C so full speed needs a
 // genuinely warm roof, not a marginal 1-2 C difference.
 static constexpr float DVS_PROFILE_RECOVER_START_C = -2.0f;
-static constexpr float DVS_PROFILE_RECOVER_FULL_C = 4.0f;
-// Proportional speed range used by the profiles (a gentle trickle .. boost).
-static constexpr uint8_t DVS_PROFILE_MIN_SPEED = 12;
-// Winter always-on moisture-ventilation baseline (slightly below minSpeed): the
-// low speed the fan holds purely for condensation control before heat recovery
-// boosts it.
-static constexpr uint8_t DVS_PROFILE_MOISTURE_SPEED = 10;
-static constexpr uint8_t DVS_PROFILE_MAX_SPEED = DVS_MAX_SPEED;
+static constexpr float DVS_PROFILE_RECOVER_FULL_C = 8.0f;
+// Shared auto-mode minium speed: the floor for both the summer free-cooling
+// trickle and the winter moisture-ventilation baseline.
+static constexpr uint8_t DVS_PROFILE_MIN_SPEED = 20;
+// Winter always-on moisture-ventilation baseline. Shares the auto minimum above
+// (the low speed the fan holds purely for condensation control before heat 
+// recovery boosts it.
+static constexpr uint8_t DVS_PROFILE_MOISTURE_SPEED = DVS_PROFILE_MIN_SPEED;
+// Auto-mode ceiling, heldd below the 84 hardware max (DVS_MAX_SPEED) to leave
+// headroom above the profile output.
+static constexpr uint8_t DVS_PROFILE_MAX_SPEED = 74;
 // `auto` profile select: inside above this -> summer (cooling), below -> winter
 // (heating), with a small deadband inside profile.cpp to avoid flip-flopping.
 static constexpr float DVS_PROFILE_COMFORT_TARGET_C = 19.0f;

@@ -26,9 +26,9 @@ static DvsProfileConfig cfg() {
     c.supplyHystC = 1.5f;
     c.recoverStartC = -2.0f;
     c.recoverFullC = 4.0f;
-    c.minSpeed = 12;
-    c.moistureBaseSpeed = 10;
-    c.maxSpeed = 84;
+    c.minSpeed = 20;
+    c.moistureBaseSpeed = 20;
+    c.maxSpeed = 74;
     return c;
 }
 
@@ -57,7 +57,7 @@ void test_winter_moisture_baseline_above_cutoff() {
     // so the always-on moisture baseline runs (matches the real unit venting for
     // condensation without adding heat).
     const uint8_t s = dvsProfileSpeed(winter(13.0f, 19.0f, true), cfg(), 0);
-    TEST_ASSERT_EQUAL_UINT8(10, s); // moistureBaseSpeed, no heat-recovery boost
+    TEST_ASSERT_EQUAL_UINT8(20, s); // moistureBaseSpeed, no heat-recovery boost
 }
 
 void test_winter_off_below_cold_cutoff() {
@@ -70,44 +70,44 @@ void test_winter_supply_cutoff_hysteresis_no_flap() {
     // Roof 11.5 C: below minSupply (12 C) but within supplyHyst (1.5 C). A
     // running fan (cur>0) keeps its moisture baseline - it cooled its own reading
     // below the cutoff and must not flap off; a stopped fan (cur=0) stays off.
-    TEST_ASSERT_EQUAL_UINT8(10, dvsProfileSpeed(winter(11.5f, 19.0f, true), cfg(), 10));
+    TEST_ASSERT_EQUAL_UINT8(20, dvsProfileSpeed(winter(11.5f, 19.0f, true), cfg(), 20));
     TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(11.5f, 19.0f, true), cfg(), 0));
     // Below the hysteresis band (10 C < 12 - 1.5): even a running fan stops.
-    TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(10.0f, 19.0f, true), cfg(), 10));
+    TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(10.0f, 19.0f, true), cfg(), 20));
 }
 
 void test_winter_heat_recovery_off_holds_baseline() {
     // Heat recovery OFF with a warm roof (26 C vs 19 C): no boost, just hold the
     // low moisture baseline.
-    TEST_ASSERT_EQUAL_UINT8(10, dvsProfileSpeed(winter(26.0f, 19.0f, false), cfg(), 40));
+    TEST_ASSERT_EQUAL_UINT8(20, dvsProfileSpeed(winter(26.0f, 19.0f, false), cfg(), 40));
 }
 
 void test_winter_comfort_high_caps_boost() {
     // Inside >= comfortHigh (24 C): keep venting for moisture at the baseline but
     // do not add the heat-recovery boost (avoid actively overheating).
-    TEST_ASSERT_EQUAL_UINT8(10, dvsProfileSpeed(winter(26.0f, 24.0f, true), cfg(), 40));
+    TEST_ASSERT_EQUAL_UINT8(20, dvsProfileSpeed(winter(26.0f, 24.0f, true), cfg(), 40));
 }
 
 void test_winter_heat_recovery_similar_temp_boost() {
     // Roof 20.2 C, inside 21.2 C: differential -1 C ("similar"). frac =
-    // (-1 - -2)/(4 - -2) = 1/6; boost = round(1/6 * 74) = 12 -> 10 + 12 = 22.
+    // (-1 - -2)/(4 - -2) = 1/6; boost = round(1/6 * 54) = 9 -> 20 + 9 = 29.
     // Similar temps still nudge the speed up rather than sitting at the baseline.
-    const uint8_t s = dvsProfileSpeed(winter(20.2f, 21.2f, true), cfg(), 10);
-    TEST_ASSERT_EQUAL_UINT8(22, s);
+    const uint8_t s = dvsProfileSpeed(winter(20.2f, 21.2f, true), cfg(), 20);
+    TEST_ASSERT_EQUAL_UINT8(29, s);
 }
 
 void test_winter_heat_recovery_not_full_at_2C() {
     // Roof 21 C, inside 19 C: differential +2 C. frac = (2 - -2)/6 = 0.667;
-    // boost = round(0.667 * 74) = 49 -> 59. A 2 C warm roof must NOT hit maxSpeed.
-    const uint8_t s = dvsProfileSpeed(winter(21.0f, 19.0f, true), cfg(), 10);
-    TEST_ASSERT_EQUAL_UINT8(59, s);
-    TEST_ASSERT_TRUE(s < 84);
+    // boost = round(0.667 * 54) = 36 -> 56. A 2 C warm roof must NOT hit maxSpeed.
+    const uint8_t s = dvsProfileSpeed(winter(21.0f, 19.0f, true), cfg(), 20);
+    TEST_ASSERT_EQUAL_UINT8(56, s);
+    TEST_ASSERT_TRUE(s < 74);
 }
 
 void test_winter_heat_recovery_full_at_4C() {
     // Roof 23 C, inside 19 C: differential +4 C == recoverFull -> maxSpeed.
-    const uint8_t s = dvsProfileSpeed(winter(23.0f, 19.0f, true), cfg(), 10);
-    TEST_ASSERT_EQUAL_UINT8(84, s);
+    const uint8_t s = dvsProfileSpeed(winter(23.0f, 19.0f, true), cfg(), 20);
+    TEST_ASSERT_EQUAL_UINT8(74, s);
 }
 
 // --- Summer: free cooling --------------------------------------------------
@@ -115,7 +115,7 @@ void test_winter_heat_recovery_full_at_4C() {
 void test_summer_cooling_with_cool_air() {
     // Roof 16 C, inside 23 C: benefit = 7 C > span -> full cooling to maxSpeed.
     const uint8_t s = dvsProfileSpeed(summer(16.0f, 23.0f), cfg(), 0);
-    TEST_ASSERT_EQUAL_UINT8(84, s);
+    TEST_ASSERT_EQUAL_UINT8(74, s);
 }
 
 void test_summer_blocks_hot_roof_air() {

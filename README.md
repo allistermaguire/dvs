@@ -325,8 +325,8 @@ rises past the inside temperature toward `recoverFull`.
 | `DVS_PROFILE_DEADBAND_ON_C` / `_OFF_C` | 1.5 / 0.5 | Summer start / stop hysteresis |
 | `DVS_PROFILE_SPAN_C` | 5 | Summer: differential at which speed reaches max |
 | `DVS_PROFILE_RECOVER_START_C` / `_FULL_C` | -2 / 4 | Winter heat-recovery ramp (roof - inside): boost start / full-speed differential |
-| `DVS_PROFILE_MIN_SPEED` / `_MAX_SPEED` | 12 / 84 | Summer proportional speed range |
-| `DVS_PROFILE_MOISTURE_SPEED` | 10 | Winter always-on moisture-ventilation baseline |
+| `DVS_PROFILE_MIN_SPEED` / `_MAX_SPEED` | 20 / 74 | Auto-mode speed range; shared summer floor + winter baseline minimum, with the max held below the 84 hardware boost for headroom |
+| `DVS_PROFILE_MOISTURE_SPEED` | 20 | Winter always-on moisture-ventilation baseline (shares the auto minimum) |
 | `DVS_HEAT_RECOVERY_DEFAULT` | on | Winter warm-roof speed boost |
 
 > The **Control model** section above describes the *original wall controller*
