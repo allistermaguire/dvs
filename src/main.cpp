@@ -577,6 +577,12 @@ void loop() {
     pollUsbCommands();
     netLoop();
 
+    // While an OTA flash is in progress, keep handing time to ArduinoOTA (via
+    // netLoop above) and suspend all bus work: no transmit, no FIFO draining.
+    if (netOtaInProgress()) {
+        return;
+    }
+
     // Drain the UART FIFO first. netLoop() (TLS publishes, WiFi/MQTT reconnects)
     // and the keepalive transmit can block loop() for longer than the inter-frame
     // gap threshold. Any bytes that arrived meanwhile are buffered in the UART;

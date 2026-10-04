@@ -9,6 +9,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
+#include <ArduinoOTA.h>
 
 #include <string.h>
 
@@ -24,6 +25,11 @@ static PubSubClient s_mqtt(s_wifiClient);
 static uint32_t s_lastWifiAttempt = 0;
 static uint32_t s_lastMqttAttempt = 0;
 static uint32_t s_lastStatePublish = 0;
+
+// OTA is started once, after Wi-Fi first associates (ArduinoOTA.begin needs a
+// live connection). s_otaInProgress gates the RS485 work in loop() during a flash.
+static bool s_otaStarted = false;
+static bool s_otaInProgress = false;
 
 // One-shot restore of mode/profile/tx/heat_recovery/retain_heat/cutoff_temp from
 // the retained */state topics on the first connect after boot. While active we
@@ -390,6 +396,35 @@ void netSetup() {
                   MQTT_CLIENT_ID);
 }
 
+bool netOtaInProgress() {
+    return s_otaInProgress;
+}
+
+// Configure and start ArduinoOTA. Called once from netLoop() after Wi-Fi first
+// associates (begin() needs an active connection). The onStart callback flags
+// the update so loop() suspends the RS485 poll cycle, and marks the device
+// offline so Home Assistant shows it as updating.
+static void otaBegin() {
+    ArduinoOTA.setHostname(MQTT_CLIENT_ID);
+    if (strlen(OTA_PASSWORD) > 0) {
+        ArduinoOTA.setPassword(OTA_PASSWORD);
+    }
+    ArduinoOTA.onStart([]() {
+        s_otaInProgress = true;
+        if (s_mqtt.connected()) {
+            s_mqtt.publish(MQTT_TOPIC_AVAILABILITY, "offline", true);
+        }
+        Serial.println(F("[ota] update starting"));
+    });
+    ArduinoOTA.onEnd([]() { Serial.println(F("\n[ota] update complete")); });
+    ArduinoOTA.onError([](ota_error_t error) {
+        s_otaInProgress = false;
+        Serial.printf("[ota] error %u\n", (unsigned)error);
+    });
+    ArduinoOTA.begin();
+    Serial.println(F("[ota] ready"));
+}
+
 void netLoop() {
     const uint32_t now = millis();
 
@@ -401,6 +436,12 @@ void netLoop() {
         }
         return;
     }
+
+    if (!s_otaStarted) {
+        s_otaStarted = true;
+        otaBegin();
+    }
+    ArduinoOTA.handle();
 
     if (!s_mqtt.connected()) {
         if (now - s_lastMqttAttempt >= MQTT_RECONNECT_MS) {

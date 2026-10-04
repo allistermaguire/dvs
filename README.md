@@ -222,6 +222,11 @@ cp include/secrets.h.example include/secrets.h
 pio run
 pio run -t upload
 
+# After the first USB flash, later updateds can go over Wi-Fi (OTA). Set the
+# device IP/hostname and OTA password first: platformio.ini [env:esp32dev_ota]
+# (upload_port, --auth) and include/secrets.h (OTA_PASSWORD).
+pio run -e esp32dev_ota -t upload
+
 # Watch the console (frames are quiet by default; type `trace on` to stream them)
 pio device monitor
 ```
