@@ -200,10 +200,10 @@ static void publishDiscovery() {
              DVS_MAX_SPEED);
     s_mqtt.publish(HA_DISCOVERY_PREFIX "/fan/dvs/fan/config", buf, true);
 
-    // Roof-space temperature sensor.
+    // Roof-space air temperature sensor.
     s_mqtt.publish(
         HA_DISCOVERY_PREFIX "/sensor/dvs/temp/config",
-        "{\"name\":\"Roof Temperature\",\"uniq_id\":\"dvs_temp\","
+        "{\"name\":\"Air Temperature\",\"uniq_id\":\"dvs_temp\","
         "\"stat_t\":\"" MQTT_TOPIC_TEMPERATURE "\",\"unit_of_meas\":\"\\u00b0C\","
         "\"dev_cla\":\"temperature\",\"stat_cla\":\"measurement\","
         HA_AVAIL "," HA_DEVICE "}",
@@ -212,7 +212,7 @@ static void publishDiscovery() {
     // Actual (sniffed) fan speed sensor.
     s_mqtt.publish(
         HA_DISCOVERY_PREFIX "/sensor/dvs/speed_actual/config",
-        "{\"name\":\"Actual Speed\",\"uniq_id\":\"dvs_speed_actual\","
+        "{\"name\":\"Fan Speed\",\"uniq_id\":\"dvs_speed_actual\","
         "\"stat_t\":\"" MQTT_TOPIC_ACTUAL_SPEED "\",\"ic\":\"mdi:fan\","
         "\"stat_cla\":\"measurement\","
         HA_AVAIL "," HA_DEVICE "}",
@@ -265,7 +265,7 @@ static void publishDiscovery() {
 
     // Winter cold-cutoff temperature (minSupply) number.
     snprintf(buf, sizeof(buf),
-             "{\"name\":\"Cold Cutoff\",\"uniq_id\":\"dvs_cutoff_temp\","
+             "{\"name\":\"Cold Cutoff Temperature\",\"uniq_id\":\"dvs_cutoff_temp\","
              "\"cmd_t\":\"" MQTT_TOPIC_CUTOFF_SET "\",\"stat_t\":\"" MQTT_TOPIC_CUTOFF_STATE "\","
              "\"min\":%d,\"max\":%d,\"step\":0.5,\"unit_of_meas\":\"\\u00b0C\","
              "\"dev_cla\":\"temperature\",\"mode\":\"box\",\"ent_cat\":\"config\","
@@ -285,7 +285,7 @@ static void publishDiscovery() {
 
     // Timed full-speed boost (minutes; 0 = off). State shows minutes remaining.
     snprintf(buf, sizeof(buf),
-            "{\"name\":\"Boost\",\"uniq_id\":\"dvs_boost\","
+            "{\"name\":\"Boost Timer\",\"uniq_id\":\"dvs_boost_timer\","
             "\"cmd_t\":\"" MQTT_TOPIC_BOOST_SET "\",\"stat_t\":\"" MQTT_TOPIC_BOOST_STATE "\","
             "\"min\":0,\"max\":%u,\"step\":30,\"unit_of_meas\":\"min\","
             "\"ic\":\"mdi:fan-plus\",\"mode\":\"box\","
@@ -297,7 +297,7 @@ static void publishDiscovery() {
     // a boost of DVS_BOOST_DEFAULT_MINUTES; it reverts to OFF when the timer ends.
     s_mqtt.publish(
         HA_DISCOVERY_PREFIX "/switch/dvs/boost/config",
-        "{\"name\":\"Boost Switch\",\"uniq_id\":\"dvs_boost_sw\","
+        "{\"name\":\"Boost\",\"uniq_id\":\"dvs_boost\","
         "\"cmd_t\":\"" MQTT_TOPIC_BOOST_PWR_SET "\",\"stat_t\":\"" MQTT_TOPIC_BOOST_PWR_STATE "\","
         "\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"ic\":\"mdi:fan-plus\","
         HA_AVAIL "," HA_DEVICE "}",

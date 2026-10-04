@@ -426,7 +426,7 @@ configs, so Home Assistant auto-creates everything under a single **DVS G3**
 device - no YAML required:
 
 - a **fan** entity (on/off + speed as a percentage over the `1..84` range),
-- **sensors** for roof temperature and actual fan speed,
+- **sensors** for air temperature and fan speed,
 - a **switch** for transmit mode (listen-only vs listen+send),
 - **selects** for control mode (`manual`/`auto`) and profile (`summer`/`winter`/`auto`),
 - a **switch** for winter heat recovery (warm-roof speed boost),
