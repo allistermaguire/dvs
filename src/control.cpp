@@ -31,6 +31,7 @@ static DvsControlMode g_controlMode = DVS_MODE_MANUAL;    // manual vs auto prof
 static DvsProfileSel g_profileSel = DVS_PROFILE_SEL_AUTO; // summer/winter/auto
 static DvsProfile g_effectiveProfile = DVS_PROFILE_WINTER; // AUTO resolved value
 static bool g_heatRecovery = DVS_HEAT_RECOVERY_DEFAULT;    // winter warm-roof boost
+static bool g_retainHeat = DVS_RETAIN_HEAT_DEFAULT;        // winter cold cutoff stops fan
 static float g_insideTempC = 0.0f;        // last inside temp fed in (MQTT)
 static bool g_haveInsideTemp = false;
 static float g_roofTempC = 0.0f;          // last roof temp sniffed from the bus
@@ -38,13 +39,15 @@ static bool g_haveRoofTemp = false;
 static uint32_t g_roofTempMs = 0;         // millis() of the last roof-temp reading
 static uint32_t g_lastControlTickMs = 0; // last auto-tick time (0 => act now)
 
-// Profile tuning (config.h boot defaults), built once rather than per tick.
-static const DvsProfileConfig g_profileCfg = {
+// Profile tuning (config.h boot defaults). minSupplyC (the cold cutoff) is mutated
+// at runtime by dvsControlSetMinSupply; the rest are fixed.
+static DvsProfileConfig g_profileCfg = {
     DVS_PROFILE_DEADBAND_ON_C,    DVS_PROFILE_DEADBAND_OFF_C,
     DVS_PROFILE_SPAN_C,           DVS_PROFILE_COMFORT_HIGH_C,
     DVS_PROFILE_COMFORT_LOW_C,    DVS_PROFILE_MIN_SUPPLY_C,
     DVS_PROFILE_MAX_SUPPLY_C,     DVS_PROFILE_SUPPLY_HYST_C,
     DVS_PROFILE_RECOVER_START_C,  DVS_PROFILE_RECOVER_FULL_C,
+    DVS_PROFILE_RETAIN_START_C,   DVS_PROFILE_RETAIN_FULL_C,
     DVS_PROFILE_MIN_SPEED,        DVS_PROFILE_MOISTURE_SPEED,
     DVS_PROFILE_MAX_SPEED,
 };
@@ -206,6 +209,12 @@ DvsProfile dvsControlGetEffectiveProfile() { return g_effectiveProfile; }
 void dvsControlSetHeatRecovery(bool on) { g_heatRecovery = on; }
 bool dvsControlGetHeatRecovery() { return g_heatRecovery; }
 
+void dvsControlSetRetainHeat(bool on) { g_retainHeat = on; }
+bool dvsControlGetRetainHeat() { return g_retainHeat; }
+
+void dvsControlSetMinSupply(float celsius) { g_profileCfg.minSupplyC = celsius; }
+float dvsControlGetMinSupply() { return g_profileCfg.minSupplyC; }
+
 void dvsControlSetInsideTemp(float celsius) {
     g_insideTempC = celsius;
     g_haveInsideTemp = true;
@@ -258,6 +267,7 @@ void dvsControlAutoTick() {
     in.roofTempC = g_roofTempC;
     in.insideTempC = g_insideTempC;
     in.heatRecovery = g_heatRecovery;
+    in.retainHeat = g_retainHeat;
     in.profile = g_effectiveProfile;
 
     const uint8_t target = dvsProfileSpeed(in, g_profileCfg, g_fanSpeed);

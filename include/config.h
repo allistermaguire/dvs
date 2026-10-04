@@ -159,8 +159,14 @@ static constexpr float DVS_PROFILE_COMFORT_HIGH_C = 24.0f;
 static constexpr float DVS_PROFILE_COMFORT_LOW_C = 18.0f;
 // Winter: never supply raw roof air colder than this (matches the observed unit
 // still ventilating for moisture at ~13 C; the floor is checked on RAW roof
-// temp, since there is no exchanger core to warm the incoming air).
+// temp, since there is no exchanger core to warm the incoming air). This is only
+// the BOOT default: the cutoff is runtime-settable over MQTT (dvs/cutoff_temp)
+// and falls back to this value when unset or the broker is unavailable.
 static constexpr float DVS_PROFILE_MIN_SUPPLY_C = 12.0f;
+// Bounds for the runtime-settable cold cutoff; out-of-range payloads are rejected
+// and the previous value kept.
+static constexpr float DVS_CUTOFF_MIN_C = 0.0f;
+static constexpr float DVS_CUTOFF_MAX_C = 20.0f;
 // Summer: never bring in roof air hotter than this (block hot midday air).
 static constexpr float DVS_PROFILE_MAX_SUPPLY_C = 24.0f;
 // Supply-cutoff hysteresis: a RUNNING fan is allowed this much slack below
@@ -170,19 +176,30 @@ static constexpr float DVS_PROFILE_MAX_SUPPLY_C = 24.0f;
 // cutoff (e.g. ~12 C). Stopping still requires the full cutoff to be crossed.
 static constexpr float DVS_PROFILE_SUPPLY_HYST_C = 2.0f;
 // Winter heat-recovery ramp (roof-minus-inside differential, deg C). The boost
-// begins around recoverStart (slightly negative so a roof "similar" to inside
-// still nudges the speed up) and reaches maxSpeed once the roof is recoverFull
-// warmer than the house. recoverFull is kept >= 8 C so full speed needs a
-// genuinely warm roof, not a marginal 1-2 C difference.
-static constexpr float DVS_PROFILE_RECOVER_START_C = -2.0f;
+// begins at recoverStart (0 == the pivot: the roof must be genuinely WARMER than
+// inside to add heat) and reaches maxSpeed once the roof is recoverFull warmer.
+// recoverFull is kept generous (>= 8 C) so full speed needs a genuinely warm
+// roof, not a marginal 1-2 C difference.
+static constexpr float DVS_PROFILE_RECOVER_START_C = 0.0f;
 static constexpr float DVS_PROFILE_RECOVER_FULL_C = 8.0f;
-// Shared auto-mode minium speed: the floor for both the summer free-cooling
-// trickle and the winter moisture-ventilation baseline.
-static constexpr uint8_t DVS_PROFILE_MIN_SPEED = 20;
-// Winter always-on moisture-ventilation baseline. Shares the auto minimum above
-// (the low speed the fan holds purely for condensation control before heat 
-// recovery boosts it.
-static constexpr uint8_t DVS_PROFILE_MOISTURE_SPEED = DVS_PROFILE_MIN_SPEED;
+// Winter retain-heat throttle (roof-minus-inside differential, deg C). The cold-
+// side mirror of the heat-recovery ramp, sharing the 0 pivot: as the roof air
+// cools below the house the fan throttles from the moisture baseline DOWN toward
+// minSpeed = 0 reduction at retainStart (roof == inside) and the full
+// (base - minSpeed) reduction at retainFull (roof this many deg colder). Below
+// the absolute cold cutoff the fan still stops (retain heat on).
+static constexpr float DVS_PROFILE_RETAIN_START_C = 0.0f;
+static constexpr float DVS_PROFILE_RETAIN_FULL_C = -8.0f;
+// Auto-mode minimum speed: the summer minimum-ventilation floor (the fan never
+// fully stops in summer) and the winter cold-cutoff step-down speed. Set to the
+// measured ~27 hardware floor (see the README fan-speed map) rather than an
+// unrealistically low trickle.
+static constexpr uint8_t DVS_PROFILE_MIN_SPEED = 27;
+// Winter always-on moisture-ventilation baseline - the speed the fan holds purely
+// for condensation control before heat recovery boosts it. Decoupled from (and
+// above) the minimum: winter wants a touch more exchange for moisture, and this
+// is what the fan holds when heat recovery is off.
+static constexpr uint8_t DVS_PROFILE_MOISTURE_SPEED = 35;
 // Auto-mode ceiling, heldd below the 84 hardware max (DVS_MAX_SPEED) to leave
 // headroom above the profile output.
 static constexpr uint8_t DVS_PROFILE_MAX_SPEED = 74;
@@ -194,6 +211,12 @@ static constexpr float DVS_PROFILE_COMFORT_TARGET_C = 19.0f;
 // cold cutoff; heat recovery additionally boosts the speed to harvest warm roof
 // air. Turn it off for a fixed low moisture-only baseline. Runtime-toggleable.
 static constexpr bool DVS_HEAT_RECOVERY_DEFAULT = true;
+
+// Winter "retain heat" default: ON. When ON, raw roof air below minSupply is too
+// cold to supply, so the fan steps down through minSpeed and stops to keep the
+// house warm. When OFF, the fan keeps holding the moisture baseline below the
+// cutoff (prioritise condensation control over heat retention). Winter only.
+static constexpr bool DVS_RETAIN_HEAT_DEFAULT = true;
 
 // How often the auto-control tick recomputes and applies a target speed.
 static constexpr uint32_t DVS_CONTROL_TICK_MS = 10000;
@@ -236,6 +259,10 @@ static constexpr uint32_t DVS_MQTT_RESTORE_WINDOW_MS = 1500;
 #define MQTT_TOPIC_PROFILE_STATE  MQTT_TOPIC_BASE "/profile/state"    // out: summer / winter / auto
 #define MQTT_TOPIC_HEATREC_SET    MQTT_TOPIC_BASE "/heat_recovery/set"   // in:  ON / OFF
 #define MQTT_TOPIC_HEATREC_STATE  MQTT_TOPIC_BASE "/heat_recovery/state" // out: ON / OFF
+#define MQTT_TOPIC_RETAIN_SET     MQTT_TOPIC_BASE "/retain_heat/set"     // in:  ON / OFF
+#define MQTT_TOPIC_RETAIN_STATE   MQTT_TOPIC_BASE "/retain_heat/state"   // out: ON / OFF
+#define MQTT_TOPIC_CUTOFF_SET     MQTT_TOPIC_BASE "/cutoff_temp/set"     // in:  deg C
+#define MQTT_TOPIC_CUTOFF_STATE   MQTT_TOPIC_BASE "/cutoff_temp/state"   // out: deg C
 // Timed full-speed boost: set minutes (0 = cancel), state echoes minutes left.
 #define MQTT_TOPIC_BOOST_SET        MQTT_TOPIC_BASE "/boost/set"        // in:  minutes (0 = cancel)
 #define MQTT_TOPIC_BOOST_STATE      MQTT_TOPIC_BASE "/boost/state"      // out: minutes remaining

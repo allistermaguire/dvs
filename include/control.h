@@ -67,6 +67,19 @@ DvsProfile dvsControlGetEffectiveProfile();
 void dvsControlSetHeatRecovery(bool on);
 bool dvsControlGetHeatRecovery();
 
+// Winter retain heat: when on, raw roof air below the cold cutoff (minSupply) is
+// too cold to supply, so the fan steps down and stops to keep the house warm.
+// With it off the fan keeps holding the moisture baseline below the cutoff
+// (prioritise condensation control over heat retention). Winter profile only.
+void dvsControlSetRetainHeat(bool on);
+bool dvsControlGetRetainHeat();
+
+// Winter cold cutoff (minSupply, deg C): the roof temperature below which the fan
+// stops (retain heat on). Runtime-settable; boots to DVS_PROFILE_MIN_SUPPLY_C and
+// falls back to it when unset.
+void dvsControlSetMinSupply(float celsius);
+float dvsControlGetMinSupply();
+
 // Feed the inside temperature (deg C), typically from a Home Assistant sensor
 // over MQTT. Records the value and a freshness timestamp.
 void dvsControlSetInsideTemp(float celsius);
