@@ -15,19 +15,22 @@
 //      cutoff (minSupply), at a baseline speed (moistureBaseSpeed). Around the
 //      0 pivot (roof == inside) the fan ramps both ways: when heat recovery is on
 //      and the roof is WARMER than inside it ramps UP from the baseline toward
-//      maxSpeed (recoverStartC..recoverFullC) to harvest free heat (capped at the
-//       baseline once inside reaches comfortHigh); when retain heat is on and the
-//      roof is COLDER than inside it ramps DOWN from the baseline toward minSpeed
-//      (retainStartC..retainFullC) to limit heat loss. Below the cold cutoff a
-//      running fan steps to minSpeed within the supplyHyst band and then stops
-//      (retain heat on), or holds the baseline (retain heat off). The cutoff
+//      maxSpeed (recoverStartC..recoverFullC) to harvest free heat (capped back to
+//      the baseline once inside reaches the comfort target); when retain heat is
+//      on and the roof is COLDER than inside it ramps DOWN from the baseline toward
+//      minSpeed (retainStartC..retainFullC) to limit heat loss. Below the cold
+//      cutoff a running fan steps to minSpeed within the supplyHyst band and then
+//      stops (retain heat on), or holds the baseline (retain heat off). The cutoff
 //      (minSupply) is runtime-configurable.
 // 
-//  SUMMER (free cooling over a minimum floor): ventilate harder when the
-//      roof/night air is cooler than inside; block hot midday roof air above
-//      maxSupply and ease off once the house is already cool (comfortLow). Unlike
-//      before, the fan never fully stops - it holds a minSpeed minimum-ventilation
-//      floor (mirroring winter's baseline) and adds the cooling boost on top.
+//  SUMMER (free cooling above the target; winter-like below it): while the house
+//      is ABOVE the target, cool it by venting cooler roof air - run only when the
+//      supply air is cooler than inside, ramping proportionally up to maxSpeed, and
+//      stop if the roof is too hot to cool with (maxSupply) or not cool enough to
+//      help. Once cooling brings the house down to the target it reverts to the
+//      winter moisture logic above (baseline + heat-recovery/retain-heat ramps)
+//      rather than stopping dead - so at/below the target summer behaves like
+//      winter.
 //
 //  FUTURE (designed, not yet implemented): a humidity channel. Given roof/inside
 //      temperature AND humidity, compute dew points and add a dehumidify demand that
@@ -61,8 +64,7 @@ struct DvsProfileConfig {
     float deadbandOnC;  // favourable differential needed to START ventilating
     float deadbandOffC; // differential below which a running fan STOPS (< 0n)
     float spanC;        // differential at which maxSpeed is reached
-    float comfortHighC; // winter: stop once inside is already this warm
-    float comfortLowC;  // summer: stop once inside is already this cool
+    float comfortTargetC; // unified target inside temp: winter caps the heat-recovery boost here, summer stops here (runtime-set)
     float minSupplyC;   // winter: never supply raw roof air colder than this (runtime-set)
     float maxSupplyC;   // summer: never supply raw roof air hotter than this
     float supplyHystC;  // slack below/above the supply cutoff for a RUNNING fan
@@ -80,12 +82,6 @@ struct DvsProfileConfig {
 // hysteresis so the fan does not chatter around a threshold.
 uint8_t dvsProfileSpeed(const DvsProfileInputs &in, const DvsProfileConfig &cfg,
                         uint8_t curSpeed);
-
-// Pick the profile for `auto` mode from the inside temperature. A small deadband
-// around comfortTargetC prevents flip-flopping in the shoulder seasons; the
-// current profile is kept while inside sits inside the band.
-DvsProfile dvsProfileAuto(float insideTempC, float comfortTargetC,
-                          DvsProfile current);
 
 // Auto-control fail-safe gate. The fan may only be driven when the roof readings
 // exists and is fresher than staleMs; otherwise control must fail safe to OFF.

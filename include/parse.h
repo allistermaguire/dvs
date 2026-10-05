@@ -107,8 +107,8 @@ inline bool dvsParseMode(const char *arg, DvsControlMode *out) {
     return false;
 }
 
-// Parse a profile selection (summer|winter|auto). Returns false on any other
-// token, so an unrecognised profile is rejected rather than defaulting to auto.
+// Parse a profile selection (summer|winter). Returns false on any other token,
+// so an unrecognised profile is rejected rather than silently coerced.
 inline bool dvsParseProfile(const char *arg, DvsProfileSel *out) {
     if (arg == nullptr) {
         return false;
@@ -122,12 +122,6 @@ inline bool dvsParseProfile(const char *arg, DvsProfileSel *out) {
     if (strcasecmp(arg, "winter") == 0) {
         if (out != nullptr) {
             *out = DVS_PROFILE_SEL_WINTER;
-        }
-        return true;
-    }
-    if (strcasecmp(arg, "auto") == 0) {
-        if (out != nullptr) {
-            *out = DVS_PROFILE_SEL_AUTO;
         }
         return true;
     }

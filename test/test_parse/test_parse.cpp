@@ -85,11 +85,14 @@ void test_profile_parser_rejects_unknown() {
     DvsProfileSel s = DVS_PROFILE_SEL_WINTER;
     TEST_ASSERT_TRUE(dvsParseProfile("summer", &s));
     TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_SUMMER, s);
-    TEST_ASSERT_TRUE(dvsParseProfile("auto", &s));
-    TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_AUTO, s);
-    // An unrecognised profile is rejected, not silently coerced to auto.
+    TEST_ASSERT_TRUE(dvsParseProfile("winter", &s));
+    TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_WINTER, s);
+    // Unrecognised profiles (including the removed "auto") are rejected, not
+    // silently coerced.
+    TEST_ASSERT_FALSE(dvsParseProfile("auto", &s));
+    TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_WINTER, s); // untouched on reject
     TEST_ASSERT_FALSE(dvsParseProfile("spring", &s));
-    TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_AUTO, s);
+    TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_WINTER, s);
 }
 
 int main(int, char **) {

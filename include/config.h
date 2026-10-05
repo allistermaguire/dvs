@@ -149,14 +149,6 @@ static constexpr float DVS_PROFILE_DEADBAND_ON_C = 1.5f;
 static constexpr float DVS_PROFILE_DEADBAND_OFF_C = 0.5f;
 // Favourable differential at which the fan reaches maxSpeed.
 static constexpr float DVS_PROFILE_SPAN_C = 5.0f;
-// Winter inside-temperature ceiling. Once the house reaches this the heat-
-// recovery boost is capped (the fan holds the moisture baseline) so we keep
-// ventilating for condensation without actively overheating. Set above the
-// ~20 C central-heating target so free solar-warmed roof air can bank a few
-// extra degrees before the boost is capped.
-static constexpr float DVS_PROFILE_COMFORT_HIGH_C = 24.0f;
-// Summer: stop once the house is already this cool (don't chill below sleeping).
-static constexpr float DVS_PROFILE_COMFORT_LOW_C = 18.0f;
 // Winter: never supply raw roof air colder than this (matches the observed unit
 // still ventilating for moisture at ~13 C; the floor is checked on RAW roof
 // temp, since there is no exchanger core to warm the incoming air). This is only
@@ -203,9 +195,14 @@ static constexpr uint8_t DVS_PROFILE_MOISTURE_SPEED = 35;
 // Auto-mode ceiling, heldd below the 84 hardware max (DVS_MAX_SPEED) to leave
 // headroom above the profile output.
 static constexpr uint8_t DVS_PROFILE_MAX_SPEED = 74;
-// `auto` profile select: inside above this -> summer (cooling), below -> winter
-// (heating), with a small deadband inside profile.cpp to avoid flip-flopping.
+// Unified target (comfort) inside temperature - the single setpoint each profile
+// aims for: winter warms up to it (heat recovery) then holds the moisture
+// baseline, summer cools down to it then stops. Only the BOOT default:
+// runtime-settable over MQTT (dvs/target_temp).
 static constexpr float DVS_PROFILE_COMFORT_TARGET_C = 19.0f;
+// Bounds for the runtime-settable target; out-of-range payloads are rejected.
+static constexpr float DVS_TARGET_MIN_C = 10.0f;
+static constexpr float DVS_TARGET_MAX_C = 30.0f;
 
 // Winter heat-recovery default: ON. Moisture ventilation always runs above the
 // cold cutoff; heat recovery additionally boosts the speed to harvest warm roof
@@ -255,14 +252,16 @@ static constexpr uint32_t DVS_MQTT_RESTORE_WINDOW_MS = 1500;
 #define MQTT_TOPIC_INSIDE_STATE   MQTT_TOPIC_BASE "/inside_temp/state"  // out: deg C (echo)
 #define MQTT_TOPIC_MODE_SET       MQTT_TOPIC_BASE "/mode/set"         // in:  manual / auto
 #define MQTT_TOPIC_MODE_STATE     MQTT_TOPIC_BASE "/mode/state"       // out: manual / auto
-#define MQTT_TOPIC_PROFILE_SET    MQTT_TOPIC_BASE "/profile/set"      // in:  summer / winter / auto
-#define MQTT_TOPIC_PROFILE_STATE  MQTT_TOPIC_BASE "/profile/state"    // out: summer / winter / auto
+#define MQTT_TOPIC_PROFILE_SET    MQTT_TOPIC_BASE "/profile/set"        // in: summer / winter
+#define MQTT_TOPIC_PROFILE_STATE  MQTT_TOPIC_BASE "/profile/state"      // out: summer / winter
 #define MQTT_TOPIC_HEATREC_SET    MQTT_TOPIC_BASE "/heat_recovery/set"   // in:  ON / OFF
 #define MQTT_TOPIC_HEATREC_STATE  MQTT_TOPIC_BASE "/heat_recovery/state" // out: ON / OFF
 #define MQTT_TOPIC_RETAIN_SET     MQTT_TOPIC_BASE "/retain_heat/set"     // in:  ON / OFF
 #define MQTT_TOPIC_RETAIN_STATE   MQTT_TOPIC_BASE "/retain_heat/state"   // out: ON / OFF
 #define MQTT_TOPIC_CUTOFF_SET     MQTT_TOPIC_BASE "/cutoff_temp/set"     // in:  deg C
 #define MQTT_TOPIC_CUTOFF_STATE   MQTT_TOPIC_BASE "/cutoff_temp/state"   // out: deg C
+#define MQTT_TOPIC_TARGET_SET     MQTT_TOPIC_BASE "/target_temp/set"     // in:  deg C
+#define MQTT_TOPIC_TARGET_STATE   MQTT_TOPIC_BASE "/target_temp/state"   // out: deg C
 // Timed full-speed boost: set minutes (0 = cancel), state echoes minutes left.
 #define MQTT_TOPIC_BOOST_SET        MQTT_TOPIC_BASE "/boost/set"        // in:  minutes (0 = cancel)
 #define MQTT_TOPIC_BOOST_STATE      MQTT_TOPIC_BASE "/boost/state"      // out: minutes remaining

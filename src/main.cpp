@@ -120,19 +120,17 @@ static void printConfig() {
     Serial.printf("[cfg] badonly=%s badCount=%lu\n", g_badOnly ? "on" : "off",
                   (unsigned long)g_badFrameCount);
     const DvsProfileSel sel = dvsControlGetProfile();
-    const char *profStr = (sel == DVS_PROFILE_SEL_SUMMER) ? "summer"
-                        : (sel == DVS_PROFILE_SEL_WINTER) ? "winter"
-                                                          : "auto";
+    const char *profStr = (sel == DVS_PROFILE_SEL_SUMMER) ? "summer" : "winter";
     float inside;
     const bool haveInside = dvsControlGetInsideTemp(&inside);
-    Serial.printf("[cfg] mode=%s profile=%s(->%s) heatrec=%s retain=%s inside=%s\n",
+    Serial.printf("[cfg] mode=%s profile=%s heatrec=%s retain=%s inside=%s\n",
                   dvsControlGetMode() == DVS_MODE_AUTO ? "auto" : "manual", profStr,
-                  dvsControlGetEffectiveProfile() == DVS_PROFILE_SUMMER ? "summer"
-                                                                        : "winter",
                   dvsControlGetHeatRecovery() ? "on" : "off",
                   dvsControlGetRetainHeat() ? "on" : "off",
                   haveInside ? String(inside, 1).c_str() : "n/a");
-    Serial.printf("[cfg] cutoff=%.1fc\n", (double)dvsControlGetMinSupply());
+    Serial.printf("[cfg] cutoff=%.1fC target=%.1fC\n",
+                (double)dvsControlGetMinSupply(),
+                (double)dvsControlGetComfortTarget());
     Serial.printf("[cfg] boost=%u min remaining\n",
                   (unsigned)dvsControlBoostRemainingMin());
 }
@@ -148,10 +146,11 @@ static void printHelp() {
     Serial.println(F("  off           power the fan off (stop)"));
     Serial.println(F("  speed <n>     set target fan speed 0..84"));
     Serial.println(F("  mode <manual|auto>      manual control vs auto profiles"));
-    Serial.println(F("  profile <summer|winter|auto> select ventilation profile"));
+    Serial.println(F("  profile <summer|winter> select ventilation profile"));
     Serial.println(F("  heatrecovery [on|off]   winter warm-roof speed boost"));
     Serial.println(F("  retain [on|off]         winter cold-cutoff stops fan"));
     Serial.println(F("  cutoff <degC>           winter cold-cutoff temperature"));
+    Serial.println(F("  target <degC>           target (house) temperature"));
     Serial.println(F("  inside <degC>           feed the inside temperature"));
     Serial.println(F("  boost <min|off>         run at full speed for N minutes"));
     Serial.println(F("  status        print current configuration"));
@@ -394,7 +393,7 @@ static void handleCommand(const String &raw) {
         if (dvsParseProfile(arg.c_str(), &sel)) {
             dvsControlSetProfile(sel);
         } else {
-            Serial.println(F("[err] usage: profile <summer|winter|auto>"));
+            Serial.println(F("[err] usage: profile <summer|winter>"));
             return;
         }
     } else if (cmd.startsWith("heatrecovery")) {
@@ -437,6 +436,19 @@ static void handleCommand(const String &raw) {
             Serial.printf("[ok] cutoff=%.1fc\n", (double)dvsControlGetMinSupply());
         } else {
             Serial.println(F("[err] usage: cutoff <degC>"));
+            return;
+        }
+    } else if (cmd.startsWith("target ")) {
+        String arg = cmd.substring(7);
+        arg.trim();
+        float t;
+        if (dvsParseFloat(arg.c_str(), &t) && t >= DVS_TARGET_MIN_C &&
+            t <= DVS_TARGET_MAX_C) {
+            dvsControlSetComfortTarget(t);
+            Serial.printf("[ok] target=%.1fC\n",
+                        (double)dvsControlGetComfortTarget());
+        } else {
+            Serial.println(F("[err] usage: target <degC>"));
             return;
         }
     } else if (cmd.startsWith("inside")) {

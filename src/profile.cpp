@@ -69,7 +69,13 @@ uint8_t dvsProfileSpeed(const DvsProfileInputs &in, const DvsProfileConfig &cfg,
     const bool running = curSpeed > 0;
     const float startStop = running ? cfg.deadbandOffC : cfg.deadbandOnC;
 
-    if (in.profile == DVS_PROFILE_WINTER) {
+    // Winter - and summer once the house is AT or BELOW the target - runs the
+    // moisture-first logic: an always-on baseline with heat-recovery (warm roof)
+    // and retain-heat (cold roof) ramps around the 0 pivot. Summer only switches
+    // to active cooling (further down) while the house is still ABOVE the target;
+    // once cooling brings it down to the target it reverts to this winter-like
+    // ventilation rather than stopping dead.
+    if (in.profile == DVS_PROFILE_WINTER || in.insideTempC <= cfg.comfortTargetC) {
         // Moisture ventilation is the always-on baseline (the core job); the fan
         // ramps up (heat recovery) or down (retain heat) around the 0 pivot.
         const uint8_t base = cfg.moistureBaseSpeed;
@@ -95,9 +101,9 @@ uint8_t dvsProfileSpeed(const DvsProfileInputs &in, const DvsProfileConfig &cfg,
 
         const float delta = in.roofTempC - in.insideTempC; // >0 warm, <0 cold
         if (delta > 0.0f) {
-            // Warm roof: heat-recovery boost above the baseline, capped once the
-            // house is already warm.
-            if (!in.heatRecovery || in.insideTempC >= cfg.comfortHighC) {
+            // Warm roof: heat-recovery boost above the baseline, capped back to the
+            // baseline once the house has reached the comfort target.
+            if (!in.heatRecovery || in.insideTempC >= cfg.comfortTargetC) {
                 return base;
             }
             const uint8_t boost = recoveryBoost(delta, cfg, base);
@@ -111,34 +117,21 @@ uint8_t dvsProfileSpeed(const DvsProfileInputs &in, const DvsProfileConfig &cfg,
         return base; // retain heat off: hold the moisture baseline
     }
 
-    // Summer: free cooling on top of a minimum-ventilation floor. Like winter's
-    // moisture baseline, the fan never fully stops - it holds minSpeed even when
-    // the roof is too hot or the house is already cool, then adds a proportional
-    // cooling boost when the roof/night air is cooler than inside. The supplyHyst
-    // slack above the hot cutoff keeps the boost from flapping near maxSupply.
+    // Summer free cooling, house still ABOVE the target. Run only while the roof
+    // (supply) air is cooler than inside so venting actually cools, ramping
+    // proportionally with the benefit. Stop when the roof is above the absolute
+    // hot ceiling (maxSupply) or the air is not cool enough to help - bringing in
+    // hotter air would only push the house further above the target. (At or below
+    // the target the winter-like branch above has already taken over.) The
+    // supplyHyst slack above maxSupply keeps a running fan from flapping there.
     const float maxSupply =
         running ? cfg.maxSupplyC + cfg.supplyHystC : cfg.maxSupplyC;
-    const float benefit = in.insideTempC - in.roofTempC; // >0 == free cooling
-    if (in.roofTempC > maxSupply || in.insideTempC <= cfg.comfortLowC ||
-        benefit < startStop) {
-        return cfg.minSpeed; // minimum ventilation floor (never fully off)
+    const float benefit = in.insideTempC - in.roofTempC; // >0 == supply cooler
+    if (in.roofTempC > maxSupply || benefit < startStop) {
+        return 0; // air too hot or not cool enough to help -> stop
     }
     const uint8_t boost = proportionalBoost(benefit, cfg);
     return clampSpeed((long)cfg.minSpeed + boost, cfg.minSpeed, cfg.maxSpeed);
-}
-
-DvsProfile dvsProfileAuto(float insideTempC, float comfortTargetC,
-                          DvsProfile current) {
-    // +/-0.5 C band around the target keeps the profile stable in the shoulder
-    // seasons instead of flipping every tick.
-    const float band = 0.5f;
-    if (insideTempC > comfortTargetC + band) {
-        return DVS_PROFILE_SUMMER;
-    }
-    if (insideTempC < comfortTargetC - band) {
-        return DVS_PROFILE_WINTER;
-    }
-    return current;
 }
 
 bool dvsProfileInputsFresh(bool haveRoof, uint32_t roofAgeMs, uint32_t staleMs) {

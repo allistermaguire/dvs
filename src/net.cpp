@@ -31,10 +31,10 @@ static uint32_t s_lastStatePublish = 0;
 static bool s_otaStarted = false;
 static bool s_otaInProgress = false;
 
-// One-shot restore of mode/profile/tx/heat_recovery/retain_heat/cutoff_temp from
-// the retained */state topics on the first connect after boot. While active we
-// suspend our own state publishing so the retained values aren't clobbered before
-// we read them back.
+// One-shot restore of mode/profile/tx/heat_recovery/retain_heat/cutoff_temp/
+// target_temp from the retained */state topics on the first connect after boot.
+// While active we suspend our own state publishing so the retained values aren't
+// clobbered before we read them back.
 static bool s_restoreDone = false;
 static bool s_restoreActive = false;
 static uint32_t s_restoreDeadline = 0;
@@ -69,16 +69,15 @@ void netPublishState() {
                   dvsControlGetMode() == DVS_MODE_AUTO ? "auto" : "manual", true);
     const DvsProfileSel sel = dvsControlGetProfile();
     s_mqtt.publish(MQTT_TOPIC_PROFILE_STATE,
-                   sel == DVS_PROFILE_SEL_SUMMER    ? "summer"
-                   : sel == DVS_PROFILE_SEL_WINTER  ? "winter"
-                  						            : "auto",
-                  true);
+                   sel == DVS_PROFILE_SEL_SUMMER ? "summer" : "winter", true);
     s_mqtt.publish(MQTT_TOPIC_HEATREC_STATE,
                    dvsControlGetHeatRecovery() ? "ON" : "OFF", true);
     s_mqtt.publish(MQTT_TOPIC_RETAIN_STATE,
                    dvsControlGetRetainHeat() ? "ON" : "OFF", true);
     snprintf(buf, sizeof(buf), "%.1f", (double)dvsControlGetMinSupply());
     s_mqtt.publish(MQTT_TOPIC_CUTOFF_STATE, buf, true);
+    snprintf(buf, sizeof(buf), "%.1f", (double)dvsControlGetComfortTarget());
+    s_mqtt.publish(MQTT_TOPIC_TARGET_STATE, buf, true);
     publishBoostState();
     float inside;
     if (dvsControlGetInsideTemp(&inside)) {
@@ -126,6 +125,13 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
                 dvsControlSetMinSupply(t);
             }
             return;
+        } else if (strcmp(topic, MQTT_TOPIC_TARGET_STATE) == 0) {
+            float t;
+            if (dvsParseFloat(msg, &t) && t >= DVS_TARGET_MIN_C &&
+                t <= DVS_TARGET_MAX_C) {
+                dvsControlSetComfortTarget(t);
+            }
+            return;
         }
     }
 
@@ -170,6 +176,13 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
         if (dvsParseFloat(msg, &t) && t >= DVS_CUTOFF_MIN_C &&
             t <= DVS_CUTOFF_MAX_C) {
             dvsControlSetMinSupply(t);
+            netPublishState();
+        }
+    } else if (strcmp(topic, MQTT_TOPIC_TARGET_SET) == 0) {
+        float t;
+        if (dvsParseFloat(msg, &t) && t >= DVS_TARGET_MIN_C &&
+            t <= DVS_TARGET_MAX_C) {
+            dvsControlSetComfortTarget(t);
             netPublishState();
         }
 	} else if (strcmp(topic, MQTT_TOPIC_BOOST_SET) == 0) {
@@ -242,12 +255,13 @@ static void publishDiscovery() {
 		HA_AVAIL "," HA_DEVICE "}",
 		true);
 
-	// Ventilation profile select (auto resolves summer/winter by temperature).
+    // Ventilation profile select (summer/winter, chosen explicitly or by an
+    // external automation - there is no auto season-switch).
 	s_mqtt.publish(
 		HA_DISCOVERY_PREFIX "/select/dvs/profile/config",
 		"{\"name\":\"Profile\",\"uniq_id\":\"dvs_profile\","
 		"\"cmd_t\":\"" MQTT_TOPIC_PROFILE_SET "\",\"stat_t\":\"" MQTT_TOPIC_PROFILE_STATE "\","
-		"\"options\":[\"summer\",\"winter\",\"auto\"],\"ent_cat\":\"config\","
+        "\"options\":[\"summer\",\"winter\"],\"ent_cat\":\"config\","
 		HA_AVAIL "," HA_DEVICE "}",
 		true);
 
@@ -278,6 +292,16 @@ static void publishDiscovery() {
              HA_AVAIL "," HA_DEVICE "}",
              (int)DVS_CUTOFF_MIN_C, (int)DVS_CUTOFF_MAX_C);
     s_mqtt.publish(HA_DISCOVERY_PREFIX "/number/dvs/cutoff_temp/config", buf, true);
+
+    // Unified target (comfort) inside temperature number.
+    snprintf(buf, sizeof(buf),
+        "{\"name\":\"House Temperature\",\"uniq_id\":\"dvs_target_temp\","
+        "\"cmd_t\":\"" MQTT_TOPIC_TARGET_SET "\",\"stat_t\":\"" MQTT_TOPIC_TARGET_STATE "\","
+        "\"min\":%d,\"max\":%d,\"step\":0.5,\"unit_of_meas\":\"\\u00b0C\","
+        "\"dev_cla\":\"temperature\",\"mode\":\"box\",\"ent_cat\":\"config\","
+        HA_AVAIL "," HA_DEVICE "}",
+        (int)DVS_TARGET_MIN_C, (int)DVS_TARGET_MAX_C);
+    s_mqtt.publish(HA_DISCOVERY_PREFIX "/number/dvs/target_temp/config", buf, true);
 
 	// Inside temperature input (feed a Home Assistant sensor value into control).
 	s_mqtt.publish(
@@ -350,6 +374,7 @@ static bool mqttConnect() {
 		s_mqtt.subscribe(MQTT_TOPIC_HEATREC_SET);
         s_mqtt.subscribe(MQTT_TOPIC_RETAIN_SET);
         s_mqtt.subscribe(MQTT_TOPIC_CUTOFF_SET);
+        s_mqtt.subscribe(MQTT_TOPIC_TARGET_SET);
         s_mqtt.subscribe(MQTT_TOPIC_BOOST_SET);
         s_mqtt.subscribe(MQTT_TOPIC_BOOST_PWR_SET);
         publishDiscovery();
@@ -363,6 +388,7 @@ static bool mqttConnect() {
             s_mqtt.subscribe(MQTT_TOPIC_HEATREC_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_RETAIN_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_CUTOFF_STATE);
+            s_mqtt.subscribe(MQTT_TOPIC_TARGET_STATE);
             s_restoreActive = true;
             s_restoreDeadline = millis() + DVS_MQTT_RESTORE_WINDOW_MS;
         } else {
@@ -464,6 +490,7 @@ void netLoop() {
         s_mqtt.unsubscribe(MQTT_TOPIC_HEATREC_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_RETAIN_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_CUTOFF_STATE);
+        s_mqtt.unsubscribe(MQTT_TOPIC_TARGET_STATE);
         netPublishState();
     }
 

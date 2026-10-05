@@ -45,12 +45,13 @@ enum DvsControlMode : uint8_t {
     DVS_MODE_AUTO = 1,
 };
 
-// Profile selection. AUTO resolves to summer/winter each tick from the inside
-// temperature (for the shoulder seasons); SUMMER/WINTER force a profile.
+// Profile selection: summer or winter, chosen explicitly (by the user or an
+// external automation, e.g. a Home Assistant seasonal switch). There is no
+// built-in auto season-switch: a single comfort setpoint can't tell a warm
+// winter day from summer, so it would wrongly flip into active cooling.
 enum DvsProfileSel : uint8_t {
     DVS_PROFILE_SEL_SUMMER = 0,
     DVS_PROFILE_SEL_WINTER = 1,
-    DVS_PROFILE_SEL_AUTO = 2,
 };
 
 void dvsControlSetMode(DvsControlMode mode);
@@ -58,7 +59,7 @@ DvsControlMode dvsControlGetMode();
 
 void dvsControlSetProfile(DvsProfileSel sel);
 DvsProfileSel dvsControlGetProfile();
-// The profile actually in effect right now (AUTO resolved to summer/winter).
+// The profile actually in effect right now (summer or winter).
 DvsProfile dvsControlGetEffectiveProfile();
 
 // Winter heat recovery: ramp the fan speed up above the moisture baseline to
@@ -79,6 +80,13 @@ bool dvsControlGetRetainHeat();
 // falls back to it when unset.
 void dvsControlSetMinSupply(float celsius);
 float dvsControlGetMinSupply();
+
+// Target (comfort) inside temperature (deg C): the single setpoint each profile
+// aims for. Winter ramps up to it (heat recovery) then holds the moisture
+// baseline; summer cools down to it then stops. Runtime-settable; boots to
+// DVS_PROFILE_COMFORT_TARGET_C.
+void dvsControlSetComfortTarget(float celsius);
+float dvsControlGetComfortTarget();
 
 // Feed the inside temperature (deg C), typically from a Home Assistant sensor
 // over MQTT. Records the value and a freshness timestamp.

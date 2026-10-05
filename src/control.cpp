@@ -28,7 +28,7 @@ static uint32_t g_boostUntilMs = 0;       // full-speed boost deadline (0 => non
 
 // --- Auto ventilation control state ------------------------------------------
 static DvsControlMode g_controlMode = DVS_MODE_MANUAL;    // manual vs auto profile
-static DvsProfileSel g_profileSel = DVS_PROFILE_SEL_AUTO; // summer/winter/auto
+static DvsProfileSel g_profileSel = DVS_PROFILE_SEL_WINTER; // summer/winter (no auto)
 static DvsProfile g_effectiveProfile = DVS_PROFILE_WINTER; // AUTO resolved value
 static bool g_heatRecovery = DVS_HEAT_RECOVERY_DEFAULT;    // winter warm-roof boost
 static bool g_retainHeat = DVS_RETAIN_HEAT_DEFAULT;        // winter cold cutoff stops fan
@@ -39,34 +39,24 @@ static bool g_haveRoofTemp = false;
 static uint32_t g_roofTempMs = 0;         // millis() of the last roof-temp reading
 static uint32_t g_lastControlTickMs = 0; // last auto-tick time (0 => act now)
 
-// Profile tuning (config.h boot defaults). minSupplyC (the cold cutoff) is mutated
-// at runtime by dvsControlSetMinSupply; the rest are fixed.
+// Profile tuning (config.h boot defaults). comfortTargetC and minSupplyC (the
+// cold cutoff) are mutated at runtime by the setters below; the rest are fixed.
 static DvsProfileConfig g_profileCfg = {
     DVS_PROFILE_DEADBAND_ON_C,    DVS_PROFILE_DEADBAND_OFF_C,
-    DVS_PROFILE_SPAN_C,           DVS_PROFILE_COMFORT_HIGH_C,
-    DVS_PROFILE_COMFORT_LOW_C,    DVS_PROFILE_MIN_SUPPLY_C,
-    DVS_PROFILE_MAX_SUPPLY_C,     DVS_PROFILE_SUPPLY_HYST_C,
-    DVS_PROFILE_RECOVER_START_C,  DVS_PROFILE_RECOVER_FULL_C,
-    DVS_PROFILE_RETAIN_START_C,   DVS_PROFILE_RETAIN_FULL_C,
-    DVS_PROFILE_MIN_SPEED,        DVS_PROFILE_MOISTURE_SPEED,
-    DVS_PROFILE_MAX_SPEED,
+    DVS_PROFILE_SPAN_C,           DVS_PROFILE_COMFORT_TARGET_C,
+    DVS_PROFILE_MIN_SUPPLY_C,     DVS_PROFILE_MAX_SUPPLY_C,
+    DVS_PROFILE_SUPPLY_HYST_C,    DVS_PROFILE_RECOVER_START_C,
+    DVS_PROFILE_RECOVER_FULL_C,   DVS_PROFILE_RETAIN_START_C,
+    DVS_PROFILE_RETAIN_FULL_C,    DVS_PROFILE_MIN_SPEED,
+    DVS_PROFILE_MOISTURE_SPEED,   DVS_PROFILE_MAX_SPEED,
 };
 
-// Resolve the profile in effect (AUTO -> summer/winter by inside temp, with
-// hysteresis inside dvsProfileAuto). With no inside reading yet, AUTO keeps the
-// current effective profile rather than resolving against a bogus 0 C.
+// Map the selected profile to the one in effect. There is no AUTO option - the
+// user (or an external automation such as a Home Assistant seasonal switch)
+// chooses summer or winter directly.
 static DvsProfile controlResolveProfile() {
-    switch (g_profileSel) {
-        case DVS_PROFILE_SEL_SUMMER:
-            return DVS_PROFILE_SUMMER;
-        case DVS_PROFILE_SEL_WINTER:
-            return DVS_PROFILE_WINTER;
-        default:
-            return g_haveInsideTemp
-                ? dvsProfileAuto(g_insideTempC, DVS_PROFILE_COMFORT_TARGET_C,
-                                 g_effectiveProfile)
-                : g_effectiveProfile;
-    }
+    return g_profileSel == DVS_PROFILE_SEL_SUMMER ? DVS_PROFILE_SUMMER
+                                                : DVS_PROFILE_WINTER;
 }
 
 // --- Fan control API (declared in control.h) ---------------------------------
@@ -199,9 +189,7 @@ void dvsControlSetProfile(DvsProfileSel sel) {
     g_effectiveProfile = controlResolveProfile(); // report state immediately
     g_lastControlTickMs = 0;                      // act on the change promptly
     Serial.printf("[ok] profile=%s\n",
-                  sel == DVS_PROFILE_SEL_SUMMER   ? "summer"
-                  : sel == DVS_PROFILE_SEL_WINTER ? "winter"
-                                                  : "auto");
+                  sel == DVS_PROFILE_SEL_SUMMER ? "summer" : "winter");
 }
 DvsProfileSel dvsControlGetProfile() { return g_profileSel; }
 DvsProfile dvsControlGetEffectiveProfile() { return g_effectiveProfile; }
@@ -214,6 +202,11 @@ bool dvsControlGetRetainHeat() { return g_retainHeat; }
 
 void dvsControlSetMinSupply(float celsius) { g_profileCfg.minSupplyC = celsius; }
 float dvsControlGetMinSupply() { return g_profileCfg.minSupplyC; }
+
+void dvsControlSetComfortTarget(float celsius) {
+    g_profileCfg.comfortTargetC = celsius;
+}
+float dvsControlGetComfortTarget() { return g_profileCfg.comfortTargetC; }
 
 void dvsControlSetInsideTemp(float celsius) {
     g_insideTempC = celsius;
