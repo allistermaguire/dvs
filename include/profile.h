@@ -6,29 +6,29 @@
 // Ventilation control profiles for the DVS G3 (positive-pressure roof-air unit).
 // 
 // The unit pushes RAW roof/outside air into the home - there is no heat-recovery
-// exchanger core, so the air actually entering the house is at the roof
-// temperature (no tempering blend). Given that, control is a pure function of
-// the roof (supply) temperature and the in-home temperature:
+// exchanger core, so the air actually entering the house is at the airflow
+// (supply) temperature (no tempering blend). Given that, control is a pure
+// function of the airflow (supply) temperature and the in-home temperature:
 // 
 //  WINTER (moisture-first, with symmetric warm/cold ramps): ALWAYS ventilate
 //      for moisture/condensation control whenever the supply air is above the cold
-//      cutoff (minSupply), at a baseline speed (moistureBaseSpeed). Around the
-//      0 pivot (roof == inside) the fan ramps both ways: when heat recovery is on
-//      and the roof is WARMER than inside it ramps UP from the baseline toward
-//      maxSpeed (recoverStartC..recoverFullC) to harvest free heat (capped back to
-//      the baseline once inside reaches the comfort target); when retain heat is
-//      on and the roof is COLDER than inside it ramps DOWN from the baseline toward
-//      minSpeed (retainStartC..retainFullC) to limit heat loss. Below the cold
-//      cutoff a running fan steps to minSpeed within the supplyHyst band and then
-//      stops (retain heat on), or holds the baseline (retain heat off). The cutoff
-//      (minSupply) is runtime-configurable.
+//      cutoff, at a baseline speed (moistureBaseSpeed). Around the
+//      0 pivot (airflow == inside) the fan ramps both ways: when heat recovery is
+//      on and the airflow is WARMER than inside it ramps UP from the baseline
+//      toward maxSpeed (recoverStartC..recoverFullC) to harvest free heat (capped
+//      back to the baseline once inside reaches the comfort target); when heat
+//      retention is on and the airflow is COLDER than inside it ramps DOWN from the
+//      baseline toward minSpeed (retentionStartC..retentionFullC) to limit heat
+//      loss. Below the cold cutoff a running fan steps to minSpeed within the
+//      supplyHyst band and then stops (heat retention on), or holds the baseline
+//      (heat retention off). The cutoff is runtime-configurable.
 // 
 //  SUMMER (free cooling above the target; winter-like below it): while the house
-//      is ABOVE the target, cool it by venting cooler roof air - run only when the
+//      is ABOVE the target, cool it by venting cooler airflow - run only when the
 //      supply air is cooler than inside, ramping proportionally up to maxSpeed, and
-//      stop if the roof is too hot to cool with (maxSupply) or not cool enough to
-//      help. Once cooling brings the house down to the target it reverts to the
-//      winter moisture logic above (baseline + heat-recovery/retain-heat ramps)
+//      stop if the airflow is too hot to cool with (maxSupply) or not cool enough
+//      to help. Once cooling brings the house down to the target it reverts to the
+//      winter moisture logic above (baseline + heat-recovery/heat-retention ramps)
 //      rather than stopping dead - so at/below the target summer behaves like
 //      winter.
 //
@@ -50,10 +50,10 @@ enum DvsProfile : uint8_t {
 
 // Live inputs to a control decision.
 struct DvsProfileInputs {
-    float roofTempC;    // raw roof/outside supply-air temperature (deg C)
+    float airflowTempC; // raw airflow/supply-air temperature (deg C)
     float insideTempC;  // in-home temperature (deg C)
-    bool heatRecovery;  // winter: ramp speed up to harvest warm roof air
-    bool retainHeat;    // winter: stop below the cold cutoff to keep house heat
+    bool heatRecovery;  // winter: ramp speed up to harvest warm airflow
+    bool heatRetention; // winter: stop below the cold cutoff to keep house heat
     DvsProfile profile; // active profile (summer or winter)
     // FUTURE: roofRh / insideRh (and derived dew points) will be added here for
     // humidity-aware dehumidification; see the header comment above.
@@ -65,13 +65,13 @@ struct DvsProfileConfig {
     float deadbandOffC; // differential below which a running fan STOPS (< 0n)
     float spanC;        // differential at which maxSpeed is reached
     float comfortTargetC; // unified target inside temp: winter caps the heat-recovery boost here, summer stops here (runtime-set)
-    float minSupplyC;   // winter: never supply raw roof air colder than this (runtime-set)
-    float maxSupplyC;   // summer: never supply raw roof air hotter than this
+    float cutoffC;         // winter: never supply raw airflow colder than this (runtime-set)
+    float maxSupplyC;      // summer: never supply raw airflow hotter than this
     float supplyHystC;  // slack below/above the supply cutoff for a RUNNING fan
-    float recoverStartC; // winter: roof-minus-inside where heat-recovery boost begins
-    float recoverFullC;  // winter: roof-minus-inside where boost reaches maxSpeed
-    float retainStartC;  // winter: roof-minus-inside where retain-heat throttle begins
-    float retainFullC;   // winter: roof-minus-inside where throttle reaches minSpeed
+    float recoverStartC; // winter: airflow-minus-inside where heat-recovery boost begins
+    float recoverFullC;  // winter: airflow-minus-inside where boost reaches maxSpeed
+    float retentionStartC; // winter: airflow-minus-inside where heat-retention throttle begins
+    float retentionFullC;  // winter: airflow-minus-inside where throttle reaches minSpeed
     uint8_t minSpeed;   // summer floor / gentle trickle speed
     uint8_t moistureBaseSpeed; // winter: always-on moisture-ventilation baseline
     uint8_t maxSpeed;   // full/boost speed
@@ -83,7 +83,7 @@ struct DvsProfileConfig {
 uint8_t dvsProfileSpeed(const DvsProfileInputs &in, const DvsProfileConfig &cfg,
                         uint8_t curSpeed);
 
-// Auto-control fail-safe gate. The fan may only be driven when the roof readings
+// Auto-control fail-safe gate. The fan may only be driven when the airflow reading
 // exists and is fresher than staleMs; otherwise control must fail safe to OFF.
 // Kept pure (ages passed in) so it can be tested off-target.
-bool dvsProfileInputsFresh(bool haveRoof, uint32_t roofAgeMs, uint32_t staleMs);
+bool dvsProfileInputsFresh(bool haveAirflow, uint32_t airflowAgeMs, uint32_t staleMs);

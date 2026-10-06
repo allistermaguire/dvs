@@ -31,7 +31,7 @@ static uint32_t s_lastStatePublish = 0;
 static bool s_otaStarted = false;
 static bool s_otaInProgress = false;
 
-// One-shot restore of mode/profile/tx/heat_recovery/retain_heat/cutoff_temp/
+// One-shot restore of mode/profile/tx/heat_recovery/heat_retention/cutoff_temp/
 // target_temp from the retained */state topics on the first connect after boot.
 // While active we suspend our own state publishing so the retained values aren't
 // clobbered before we read them back.
@@ -72,9 +72,9 @@ void netPublishState() {
                    sel == DVS_PROFILE_SEL_SUMMER ? "summer" : "winter", true);
     s_mqtt.publish(MQTT_TOPIC_HEATREC_STATE,
                    dvsControlGetHeatRecovery() ? "ON" : "OFF", true);
-    s_mqtt.publish(MQTT_TOPIC_RETAIN_STATE,
-                   dvsControlGetRetainHeat() ? "ON" : "OFF", true);
-    snprintf(buf, sizeof(buf), "%.1f", (double)dvsControlGetMinSupply());
+    s_mqtt.publish(MQTT_TOPIC_RETENTION_STATE,
+                   dvsControlGetHeatRetention() ? "ON" : "OFF", true);
+    snprintf(buf, sizeof(buf), "%.1f", (double)dvsControlGetCutoff());
     s_mqtt.publish(MQTT_TOPIC_CUTOFF_STATE, buf, true);
     snprintf(buf, sizeof(buf), "%.1f", (double)dvsControlGetComfortTarget());
     s_mqtt.publish(MQTT_TOPIC_TARGET_STATE, buf, true);
@@ -115,14 +115,14 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
         } else if (strcmp(topic, MQTT_TOPIC_HEATREC_STATE) == 0) {
             dvsControlSetHeatRecovery(dvsParseOnOff(msg));
             return;
-        } else if (strcmp(topic, MQTT_TOPIC_RETAIN_STATE) == 0) {
-            dvsControlSetRetainHeat(dvsParseOnOff(msg));
+        } else if (strcmp(topic, MQTT_TOPIC_RETENTION_STATE) == 0) {
+            dvsControlSetHeatRetention(dvsParseOnOff(msg));
             return;
         } else if (strcmp(topic, MQTT_TOPIC_CUTOFF_STATE) == 0) {
             float t;
             if (dvsParseFloat(msg, &t) && t >= DVS_CUTOFF_MIN_C &&
                 t <= DVS_CUTOFF_MAX_C) {
-                dvsControlSetMinSupply(t);
+                dvsControlSetCutoff(t);
             }
             return;
         } else if (strcmp(topic, MQTT_TOPIC_TARGET_STATE) == 0) {
@@ -168,14 +168,14 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
 	} else if (strcmp(topic, MQTT_TOPIC_HEATREC_SET) == 0) {
 		dvsControlSetHeatRecovery(dvsParseOnOff(msg));
 		netPublishState();
-	} else if (strcmp(topic, MQTT_TOPIC_RETAIN_SET) == 0) {
-		dvsControlSetRetainHeat(dvsParseOnOff(msg));
+    } else if (strcmp(topic, MQTT_TOPIC_RETENTION_SET) == 0) {
+        dvsControlSetHeatRetention(dvsParseOnOff(msg));
 		netPublishState();
     } else if (strcmp(topic, MQTT_TOPIC_CUTOFF_SET) == 0) {
         float t;
         if (dvsParseFloat(msg, &t) && t >= DVS_CUTOFF_MIN_C &&
             t <= DVS_CUTOFF_MAX_C) {
-            dvsControlSetMinSupply(t);
+            dvsControlSetCutoff(t);
             netPublishState();
         }
     } else if (strcmp(topic, MQTT_TOPIC_TARGET_SET) == 0) {
@@ -219,10 +219,10 @@ static void publishDiscovery() {
              DVS_MAX_SPEED);
     s_mqtt.publish(HA_DISCOVERY_PREFIX "/fan/dvs/fan/config", buf, true);
 
-    // Roof-space air temperature sensor.
+    // Airflow (supply-air) temperature sensor.
     s_mqtt.publish(
         HA_DISCOVERY_PREFIX "/sensor/dvs/temp/config",
-        "{\"name\":\"Air Temperature\",\"uniq_id\":\"dvs_temp\","
+        "{\"name\":\"Airflow Temperature\",\"uniq_id\":\"dvs_airflow_temp\","
         "\"stat_t\":\"" MQTT_TOPIC_TEMPERATURE "\",\"unit_of_meas\":\"\\u00b0C\","
         "\"dev_cla\":\"temperature\",\"stat_cla\":\"measurement\","
         HA_AVAIL "," HA_DEVICE "}",
@@ -274,16 +274,16 @@ static void publishDiscovery() {
 		HA_AVAIL "," HA_DEVICE "}",
 		true);
 
-    // Winter retain-heat switch (stop the fan below the cold cutoff to keep heat).
+    // Winter heat-retention switch (stop the fan below the cold cutoff to keep heat).
     s_mqtt.publish(
-        HA_DISCOVERY_PREFIX "/switch/dvs/retain_heat/config",
-        "{\"name\":\"Retain Heat\",\"uniq_id\":\"dvs_retain_heat\","
-        "\"cmd_t\":\"" MQTT_TOPIC_RETAIN_SET "\",\"stat_t\":\"" MQTT_TOPIC_RETAIN_STATE "\","
+        HA_DISCOVERY_PREFIX "/switch/dvs/heat_retention/config",
+        "{\"name\":\"Heat Retention\",\"uniq_id\":\"dvs_heat_retention\","
+        "\"cmd_t\":\"" MQTT_TOPIC_RETENTION_SET "\",\"stat_t\":\"" MQTT_TOPIC_RETENTION_STATE "\","
         "\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"ent_cat\":\"config\","
         HA_AVAIL "," HA_DEVICE "}",
         true);
 
-    // Winter cold-cutoff temperature (minSupply) number.
+    // Winter cold-cutoff temperature number.
     snprintf(buf, sizeof(buf),
              "{\"name\":\"Cold Cutoff Temperature\",\"uniq_id\":\"dvs_cutoff_temp\","
              "\"cmd_t\":\"" MQTT_TOPIC_CUTOFF_SET "\",\"stat_t\":\"" MQTT_TOPIC_CUTOFF_STATE "\","
@@ -295,23 +295,13 @@ static void publishDiscovery() {
 
     // Unified target (comfort) inside temperature number.
     snprintf(buf, sizeof(buf),
-        "{\"name\":\"House Temperature\",\"uniq_id\":\"dvs_target_temp\","
+        "{\"name\":\"Set Temperature\",\"uniq_id\":\"dvs_target_temp\","
         "\"cmd_t\":\"" MQTT_TOPIC_TARGET_SET "\",\"stat_t\":\"" MQTT_TOPIC_TARGET_STATE "\","
         "\"min\":%d,\"max\":%d,\"step\":0.5,\"unit_of_meas\":\"\\u00b0C\","
         "\"dev_cla\":\"temperature\",\"mode\":\"box\",\"ent_cat\":\"config\","
         HA_AVAIL "," HA_DEVICE "}",
         (int)DVS_TARGET_MIN_C, (int)DVS_TARGET_MAX_C);
     s_mqtt.publish(HA_DISCOVERY_PREFIX "/number/dvs/target_temp/config", buf, true);
-
-	// Inside temperature input (feed a Home Assistant sensor value into control).
-	s_mqtt.publish(
-		HA_DISCOVERY_PREFIX "/number/dvs/inside_temp/config",
-		"{\"name\":\"Inside Temperature\",\"uniq_id\":\"dvs_inside_temp\","
-		"\"cmd_t\":\"" MQTT_TOPIC_INSIDE_SET "\",\"stat_t\":\"" MQTT_TOPIC_INSIDE_STATE "\","
-		"\"min\":-10,\"max\":40,\"step\":0.1,\"unit_of_meas\":\"\u00b0C\","
-		"\"dev_cla\":\"temperature\",\"mode\":\"box\",\"ent_cat\":\"config\","
-		HA_AVAIL "," HA_DEVICE "}",
-		true);
 
     // Timed full-speed boost (minutes; 0 = off). State shows minutes remaining.
     snprintf(buf, sizeof(buf),
@@ -327,7 +317,7 @@ static void publishDiscovery() {
     // a boost of DVS_BOOST_DEFAULT_MINUTES; it reverts to OFF when the timer ends.
     s_mqtt.publish(
         HA_DISCOVERY_PREFIX "/switch/dvs/boost/config",
-        "{\"name\":\"Boost\",\"uniq_id\":\"dvs_boost\","
+        "{\"name\":\"Fan Boost\",\"uniq_id\":\"dvs_fan_boost\","
         "\"cmd_t\":\"" MQTT_TOPIC_BOOST_PWR_SET "\",\"stat_t\":\"" MQTT_TOPIC_BOOST_PWR_STATE "\","
         "\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"ic\":\"mdi:fan-plus\","
         HA_AVAIL "," HA_DEVICE "}",
@@ -372,7 +362,7 @@ static bool mqttConnect() {
 		s_mqtt.subscribe(MQTT_TOPIC_MODE_SET);
 		s_mqtt.subscribe(MQTT_TOPIC_PROFILE_SET);
 		s_mqtt.subscribe(MQTT_TOPIC_HEATREC_SET);
-        s_mqtt.subscribe(MQTT_TOPIC_RETAIN_SET);
+        s_mqtt.subscribe(MQTT_TOPIC_RETENTION_SET);
         s_mqtt.subscribe(MQTT_TOPIC_CUTOFF_SET);
         s_mqtt.subscribe(MQTT_TOPIC_TARGET_SET);
         s_mqtt.subscribe(MQTT_TOPIC_BOOST_SET);
@@ -386,7 +376,7 @@ static bool mqttConnect() {
             s_mqtt.subscribe(MQTT_TOPIC_PROFILE_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_TX_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_HEATREC_STATE);
-            s_mqtt.subscribe(MQTT_TOPIC_RETAIN_STATE);
+            s_mqtt.subscribe(MQTT_TOPIC_RETENTION_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_CUTOFF_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_TARGET_STATE);
             s_restoreActive = true;
@@ -488,7 +478,7 @@ void netLoop() {
         s_mqtt.unsubscribe(MQTT_TOPIC_PROFILE_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_TX_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_HEATREC_STATE);
-        s_mqtt.unsubscribe(MQTT_TOPIC_RETAIN_STATE);
+        s_mqtt.unsubscribe(MQTT_TOPIC_RETENTION_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_CUTOFF_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_TARGET_STATE);
         netPublishState();

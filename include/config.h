@@ -45,7 +45,7 @@ enum DvsRegister : uint8_t {
     REG_DEADMAN     = 0x03, // NOT observed in live control captures (see below)
     REG_SET_ADDRESS = 0x04, // 1 byte payload -> becomes new peripheral address
     REG_STOP        = 0x05, // NOT observed; "off" is really speed 0 via 0x15
-    REG_TEMP        = 0x10, // roof-space temp: payload byte0 = raw count (cal TODO)
+    REG_TEMP        = 0x10, // airflow temp: payload byte0 = raw count (cal TODO)
     REG_FAN_SPEED   = 0x15, // fan speed 0..84: 1-byte payload=target, 2-byte=actual
 };
 
@@ -65,10 +65,10 @@ static inline bool dvs_is_status_reg(uint8_t reg) {
     return false;
 }
 
-// Roof-space temperature calibration: temp_C = raw * SCALE - OFFSET.
+// Airflow (supply-air) temperature calibration: temp_C = raw * SCALE - OFFSET.
 // Least-squares fit to 8 live points over 11-20 C (residuals < 0.75 C).
-static constexpr float DVS_TEMP_CAL_SCALE   = 0.06807f;
-static constexpr float DVS_TEMP_CAL_OFFSET  = 1.039f;
+static constexpr float DVS_AIRFLOW_CAL_SCALE = 0.06807f;
+static constexpr float DVS_AIRFLOW_CAL_OFFSET = 1.039f;
 
 // --- Control (transmit) parameters ----------------------------------------
 // The base firmware is listen-only; enabling MQTT control makes the ESP32 an
@@ -135,10 +135,10 @@ static constexpr uint16_t DVS_BOOST_DEFAULT_MINUTES = 60;
 
 // --- Automatic ventilation profiles (summer / winter) ---
 // When the control mode is `auto` (and transmit is enabled) the firmware acts on
-// the roof (supply) temperature sniffed from the bus and an inside temperature
+// the airflow (supply) temperature sniffed from the bus and an inside temperature
 // fed in over MQTT (dvs/inside_temp/set), computing a proportional fan speed via
 // the pure logic in profile.cpp. The unit is positive-pressure roof air with no
-// heat-recovery core, so the air entering the house is the RAW roof temperature
+// heat-recovery core, so the air entering the house is the RAW airflow temperature
 // (there is no tempering blend). Defaults below are tuned for Wellington NZ,
 // where the primary job is moisture/condensation control; all are runtime
 // tunable over MQTT/console. See profile.h for the decision logic.
@@ -149,39 +149,39 @@ static constexpr float DVS_PROFILE_DEADBAND_ON_C = 1.5f;
 static constexpr float DVS_PROFILE_DEADBAND_OFF_C = 0.5f;
 // Favourable differential at which the fan reaches maxSpeed.
 static constexpr float DVS_PROFILE_SPAN_C = 5.0f;
-// Winter: never supply raw roof air colder than this (matches the observed unit
-// still ventilating for moisture at ~13 C; the floor is checked on RAW roof
+// Winter: never supply raw airflow colder than this (matches the observed unit
+// still ventilating for moisture at ~13 C; the floor is checked on RAW airflow
 // temp, since there is no exchanger core to warm the incoming air). This is only
 // the BOOT default: the cutoff is runtime-settable over MQTT (dvs/cutoff_temp)
 // and falls back to this value when unset or the broker is unavailable.
-static constexpr float DVS_PROFILE_MIN_SUPPLY_C = 12.0f;
+static constexpr float DVS_PROFILE_CUTOFF_C = 12.0f;
 // Bounds for the runtime-settable cold cutoff; out-of-range payloads are rejected
 // and the previous value kept.
 static constexpr float DVS_CUTOFF_MIN_C = 0.0f;
 static constexpr float DVS_CUTOFF_MAX_C = 20.0f;
-// Summer: never bring in roof air hotter than this (block hot midday air).
+// Summer: never bring in airflow hotter than this (block hot midday air).
 static constexpr float DVS_PROFILE_MAX_SUPPLY_C = 24.0f;
 // Supply-cutoff hysteresis: a RUNNING fan is allowed this much slack below
-// minSupply (and above maxSupply) before it stops. A running fan cools its own
-// roof-temp reading, dipping it under the cutoff; without slack the fan cuts
+// the cutoff (and above maxSupply) before it stops. A running fan cools its own
+// airflow-temp reading, dipping it under the cutoff; without slack the fan cuts
 // out, the reading recovers, and it restarts - the classic on/off flap near the
 // cutoff (e.g. ~12 C). Stopping still requires the full cutoff to be crossed.
 static constexpr float DVS_PROFILE_SUPPLY_HYST_C = 2.0f;
-// Winter heat-recovery ramp (roof-minus-inside differential, deg C). The boost
-// begins at recoverStart (0 == the pivot: the roof must be genuinely WARMER than
-// inside to add heat) and reaches maxSpeed once the roof is recoverFull warmer.
-// recoverFull is kept generous (>= 8 C) so full speed needs a genuinely warm
-// roof, not a marginal 1-2 C difference.
+// Winter heat-recovery ramp (airflow-minus-inside differential, deg C). The boost
+// begins at recoverStart (0 == the pivot: the airflow must be genuinely WARMER
+// than inside to add heat) and reaches maxSpeed once it is recoverFull warmer.
+// recoverFull is kept generous (>= 8 C) so full speed needs genuinely warm
+// airflow, not a marginal 1-2 C difference.
 static constexpr float DVS_PROFILE_RECOVER_START_C = 0.0f;
 static constexpr float DVS_PROFILE_RECOVER_FULL_C = 8.0f;
-// Winter retain-heat throttle (roof-minus-inside differential, deg C). The cold-
-// side mirror of the heat-recovery ramp, sharing the 0 pivot: as the roof air
+// Winter heat-retention throttle (airflow-minus-inside differential, deg C). The
+// cold-side mirror of the heat-recovery ramp, sharing the 0 pivot: as the airflow
 // cools below the house the fan throttles from the moisture baseline DOWN toward
-// minSpeed = 0 reduction at retainStart (roof == inside) and the full
-// (base - minSpeed) reduction at retainFull (roof this many deg colder). Below
-// the absolute cold cutoff the fan still stops (retain heat on).
-static constexpr float DVS_PROFILE_RETAIN_START_C = 0.0f;
-static constexpr float DVS_PROFILE_RETAIN_FULL_C = -8.0f;
+// minSpeed - 0 reduction at retentionStart (airflow == inside) and the full
+// (base - minSpeed) reduction at retentionFull (airflow this many deg colder).
+// Below the absolute cold cutoff the fan still stops (heat retention on).
+static constexpr float DVS_PROFILE_RETENTION_START_C = 0.0f;
+static constexpr float DVS_PROFILE_RETENTION_FULL_C = -8.0f;
 // Auto-mode minimum speed: the summer minimum-ventilation floor (the fan never
 // fully stops in summer) and the winter cold-cutoff step-down speed. Set to the
 // measured ~27 hardware floor (see the README fan-speed map) rather than an
@@ -205,19 +205,19 @@ static constexpr float DVS_TARGET_MIN_C = 10.0f;
 static constexpr float DVS_TARGET_MAX_C = 30.0f;
 
 // Winter heat-recovery default: ON. Moisture ventilation always runs above the
-// cold cutoff; heat recovery additionally boosts the speed to harvest warm roof
-// air. Turn it off for a fixed low moisture-only baseline. Runtime-toggleable.
+// cold cutoff; heat recovery additionally boosts the speed to harvest warm
+// airflow. Turn it off for a fixed low moisture-only baseline. Runtime-toggleable.
 static constexpr bool DVS_HEAT_RECOVERY_DEFAULT = true;
 
-// Winter "retain heat" default: ON. When ON, raw roof air below minSupply is too
-// cold to supply, so the fan steps down through minSpeed and stops to keep the
+// Winter "heat retention" default: ON. When ON, raw airflow below the cutoff is
+// too cold to supply, so the fan steps down through minSpeed and stops to keep the
 // house warm. When OFF, the fan keeps holding the moisture baseline below the
 // cutoff (prioritise condensation control over heat retention). Winter only.
-static constexpr bool DVS_RETAIN_HEAT_DEFAULT = true;
+static constexpr bool DVS_HEAT_RETENTION_DEFAULT = true;
 
 // How often the auto-control tick recomputes and applies a target speed.
 static constexpr uint32_t DVS_CONTROL_TICK_MS = 10000;
-// Auto control fails safe to OFF if the roof temperature is older than this (a
+// Auto control fails safe to OFF if the airflow temperature is older than this (a
 // stale/absent reading must not silently hold the fan on).
 static constexpr uint32_t DVS_TEMP_STALE_MS = 300000; // 5 min
 
@@ -242,12 +242,12 @@ static constexpr uint32_t DVS_MQTT_RESTORE_WINDOW_MS = 1500;
 #define MQTT_TOPIC_SPEED_SET     MQTT_TOPIC_BASE "/speed/set"    // in:  0..84
 #define MQTT_TOPIC_SPEED_STATE   MQTT_TOPIC_BASE "/speed/state"  // out: commanded 0..84
 #define MQTT_TOPIC_ACTUAL_SPEED  MQTT_TOPIC_BASE "/speed/actual" // out: sniffed actual
-#define MQTT_TOPIC_TEMPERATURE   MQTT_TOPIC_BASE "/temperature"  // out: sniffed roof temp
+#define MQTT_TOPIC_TEMPERATURE   MQTT_TOPIC_BASE "/temperature"  // out: sniffed airflow temp
 #define MQTT_TOPIC_TX_SET        MQTT_TOPIC_BASE "/tx/set"       // in:  ON / OFF (send vs listen)
 #define MQTT_TOPIC_TX_STATE      MQTT_TOPIC_BASE "/tx/state"     // out: ON / OFF
 // Automatic ventilation control. Inside temperature is fed in (e.g. from a Home
 // Assistant sensor); mode/profile select the summer/winter behaviour and heat
-// recovery toggles the winter warm-roof speed boost.
+// recovery toggles the winter warm-airflow speed boost.
 #define MQTT_TOPIC_INSIDE_SET     MQTT_TOPIC_BASE "/inside_temp/set"  // in:  deg C
 #define MQTT_TOPIC_INSIDE_STATE   MQTT_TOPIC_BASE "/inside_temp/state"  // out: deg C (echo)
 #define MQTT_TOPIC_MODE_SET       MQTT_TOPIC_BASE "/mode/set"         // in:  manual / auto
@@ -256,8 +256,8 @@ static constexpr uint32_t DVS_MQTT_RESTORE_WINDOW_MS = 1500;
 #define MQTT_TOPIC_PROFILE_STATE  MQTT_TOPIC_BASE "/profile/state"      // out: summer / winter
 #define MQTT_TOPIC_HEATREC_SET    MQTT_TOPIC_BASE "/heat_recovery/set"   // in:  ON / OFF
 #define MQTT_TOPIC_HEATREC_STATE  MQTT_TOPIC_BASE "/heat_recovery/state" // out: ON / OFF
-#define MQTT_TOPIC_RETAIN_SET     MQTT_TOPIC_BASE "/retain_heat/set"     // in:  ON / OFF
-#define MQTT_TOPIC_RETAIN_STATE   MQTT_TOPIC_BASE "/retain_heat/state"   // out: ON / OFF
+#define MQTT_TOPIC_RETENTION_SET   MQTT_TOPIC_BASE "/heat_retention/set"   // in:  ON / OFF
+#define MQTT_TOPIC_RETENTION_STATE MQTT_TOPIC_BASE "/heat_retention/state" // out: ON / OFF
 #define MQTT_TOPIC_CUTOFF_SET     MQTT_TOPIC_BASE "/cutoff_temp/set"     // in:  deg C
 #define MQTT_TOPIC_CUTOFF_STATE   MQTT_TOPIC_BASE "/cutoff_temp/state"   // out: deg C
 #define MQTT_TOPIC_TARGET_SET     MQTT_TOPIC_BASE "/target_temp/set"     // in:  deg C

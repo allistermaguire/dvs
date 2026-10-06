@@ -20,36 +20,36 @@ static DvsProfileConfig cfg() {
     c.deadbandOffC = 0.5f;
     c.spanC = 5.0f;
     c.comfortTargetC = 19.0f;
-    c.minSupplyC = 12.0f;
+    c.cutoffC = 12.0f;
     c.maxSupplyC = 24.0f;
     c.supplyHystC = 2.0f;
     c.recoverStartC = 0.0f;
     c.recoverFullC = 8.0f;
-    c.retainStartC = 0.0f;
-    c.retainFullC = -8.0f;
+    c.retentionStartC = 0.0f;
+    c.retentionFullC = -8.0f;
     c.minSpeed = 27;
     c.moistureBaseSpeed = 35;
     c.maxSpeed = 74;
     return c;
 }
 
-static DvsProfileInputs winter(float roof, float inside, bool heatRecovery,
-                               bool retainHeat = true) {
+static DvsProfileInputs winter(float airflow, float inside, bool heatRecovery,
+                               bool heatRetention = true) {
     DvsProfileInputs in;
-    in.roofTempC = roof;
+    in.airflowTempC = airflow;
     in.insideTempC = inside;
     in.heatRecovery = heatRecovery;
-    in.retainHeat = retainHeat;
+    in.heatRetention = heatRetention;
     in.profile = DVS_PROFILE_WINTER;
     return in;
 }
 
-static DvsProfileInputs summer(float roof, float inside) {
+static DvsProfileInputs summer(float airflow, float inside) {
     DvsProfileInputs in;
-    in.roofTempC = roof;
+    in.airflowTempC = airflow;
     in.insideTempC = inside;
     in.heatRecovery = false;
-    in.retainHeat = false;
+    in.heatRetention = false;
     in.profile = DVS_PROFILE_SUMMER;
     return in;
 }
@@ -57,19 +57,19 @@ static DvsProfileInputs summer(float roof, float inside) {
 // --- Winter: moisture baseline + heat recovery -------------------------------
 
 void test_winter_baseline_at_neutral() {
-    // Roof == inside (19/19), above the cutoff: at the 0 pivot the fan holds the
+    // Airflow == inside (19/19), above the cutoff: at the 0 pivot the fan holds the
     // moisture baseline - no heat-recovery boost, no retain-heat throttle.
     TEST_ASSERT_EQUAL_UINT8(35, dvsProfileSpeed(winter(19.0f, 19.0f, true), cfg(), 0));
 }
 
 void test_winter_off_below_cold_cutoff() {
-    // Roof 11 C is below minSupply (12 C): too cold to supply, fan off with retain
-    // heat on (the default) from a stopped start (full cutoff immediately).
+    // Airflow 11 C is below the cutoff (12 C): too cold to supply, fan off with heat
+    // retention on (the default) from a stopped start (full cutoff, no step-down).
     TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(11.0f, 19.0f, true), cfg(), 0));
 }
 
-void test_winter_retain_heat_throttle_ramps_down() {
-    // Retain heat ON: above the cutoff a roof COLDER than inside throttles the
+void test_winter_heat_retention_throttle_ramps_down() {
+    // Heat retention ON: above the cutoff a airflow COLDER than inside throttles the
     // baseline down proportionally (cold-side mirror of heat recovery). range =
     // base - minSpeed = 8; cut = round((-delta / 8) * 8) = round(-delta).
     // delta -1 -> 34, delta -4 -> 31, delta -6 -> 29.
@@ -78,8 +78,8 @@ void test_winter_retain_heat_throttle_ramps_down() {
     TEST_ASSERT_EQUAL_UINT8(29, dvsProfileSpeed(winter(13.0f, 19.0f, true), cfg(), 35));
 }
 
-void test_winter_retain_heat_cutoff() {
-    // Below minSupply (12 C) a RUNNING fan steps to minSpeed within the supplyHyst
+void test_winter_heat_retention_cutoff() {
+    // Below the cutoff (12 C) a RUNNING fan steps to minSpeed within the supplyHyst
     // band (2 C) then stops; a stopped fan uses the full cutoff.
     // Roof 11 C is inside the band (12 - 2 = 10): running -> minSpeed, stopped -> off.
     TEST_ASSERT_EQUAL_UINT8(27, dvsProfileSpeed(winter(11.0f, 19.0f, true), cfg(), 35));
@@ -88,20 +88,20 @@ void test_winter_retain_heat_cutoff() {
     TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(9.0f, 19.0f, true), cfg(), 35));
 }
 
-void test_winter_retain_heat_off_holds_baseline() {
-    // Retain heat OFF: moisture takes priority over heat, so a cold roof holds the
-    // moisture baseline (no throttle) both above and below the cold cutoff.
+void test_winter_heat_retention_off_holds_baseline() {
+    // Heat retention OFF: moisture takes priority over heat, so a cold roof holds
+    // the moisture baseline (no throttle) both above and below the cold cutoff.
     TEST_ASSERT_EQUAL_UINT8(35, dvsProfileSpeed(winter(15.0f, 19.0f, true, false), cfg(), 35));
     TEST_ASSERT_EQUAL_UINT8(35, dvsProfileSpeed(winter(9.0f, 19.0f, true, false), cfg(), 35));
     TEST_ASSERT_EQUAL_UINT8(35, dvsProfileSpeed(winter(9.0f, 19.0f, true, false), cfg(), 0));
 }
 
 void test_winter_custom_cutoff() {
-    // The cold cutoff is runtime-settable via cfg.minSupplyC. Raising it to 15 C
+    // The cold cutoff is runtime-settable via cfg.cutoffC. Raising it to 15 C
     // stops the fan at roof 14 C, where the default 12 C cutoff would still vent
     // (throttled baseline).
     DvsProfileConfig c = cfg();
-    c.minSupplyC = 15.0f;
+    c.cutoffC = 15.0f;
     TEST_ASSERT_EQUAL_UINT8(0, dvsProfileSpeed(winter(14.0f, 19.0f, true), c, 0));
     TEST_ASSERT_TRUE(dvsProfileSpeed(winter(14.0f, 19.0f, true), cfg(), 0) > 0);
 }
@@ -120,8 +120,8 @@ void test_winter_caps_boost_at_target() {
 }
 
 void test_winter_heat_recovery_not_full_at_2C() {
-    // Roof 19 C, inside 17 C (below the 19 C target): differential +2 C. frac =
-    // 2/8 = 0.25; boost = round(0.25 * 39) = 10 -> 45. A 2 C warm roof must NOT
+    // Airflow 19 C, inside 17 C (below the 19 C target): differential +2 C. frac =
+    // 2/8 = 0.25; boost = round(0.25 * 39) = 10 -> 45. A 2 C warm airflow must NOT
     // hit maxSpeed.
     const uint8_t s = dvsProfileSpeed(winter(19.0f, 17.0f, true), cfg(), 35);
     TEST_ASSERT_EQUAL_UINT8(45, s);
@@ -129,7 +129,7 @@ void test_winter_heat_recovery_not_full_at_2C() {
 }
 
 void test_winter_heat_recovery_full_at_8C() {
-    // Roof 25 C, inside 17 C (below target): differential +8 C == recoverFull ->
+    // Airflow 25 C, inside 17 C (below target): differential +8 C == recoverFull ->
     // maxSpeed.
     const uint8_t s = dvsProfileSpeed(winter(25.0f, 17.0f, true), cfg(), 35);
     TEST_ASSERT_EQUAL_UINT8(74, s);
@@ -138,7 +138,7 @@ void test_winter_heat_recovery_full_at_8C() {
 // -- Summer: free cooling toward the target --------------------------------
 
 void test_summer_cooling_with_cool_air() {
-    // Roof 16 C, inside 23 C: benefit = 7 C > span -> full cooling to maxSpeed.
+    // Airflow 16 C, inside 23 C: benefit = 7 C > span -> full cooling to maxSpeed.
     const uint8_t s = dvsProfileSpeed(summer(16.0f, 23.0f), cfg(), 0);
     TEST_ASSERT_EQUAL_UINT8(74, s);
 }
@@ -211,9 +211,9 @@ int main(int, char **) {
     UNITY_BEGIN();
     RUN_TEST(test_winter_baseline_at_neutral);
     RUN_TEST(test_winter_off_below_cold_cutoff);
-    RUN_TEST(test_winter_retain_heat_throttle_ramps_down);
-    RUN_TEST(test_winter_retain_heat_cutoff);
-    RUN_TEST(test_winter_retain_heat_off_holds_baseline);
+    RUN_TEST(test_winter_heat_retention_throttle_ramps_down);
+    RUN_TEST(test_winter_heat_retention_cutoff);
+    RUN_TEST(test_winter_heat_retention_off_holds_baseline);
     RUN_TEST(test_winter_custom_cutoff);
     RUN_TEST(test_winter_heat_recovery_off_holds_baseline);
     RUN_TEST(test_winter_caps_boost_at_target);

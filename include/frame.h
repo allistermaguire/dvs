@@ -26,9 +26,9 @@ inline size_t dvs_frame_payload_len(const DvsFrame &f) {
 return f.len - 4; // minus addr, register, 2x CRC
 }
 
-// Convert a raw roof-space sensor count (payload byte 0 of REG_TEMP) to deg C.
+// Convert a raw airflow (supply-air) sensor count (payload byte 0 of REG_TEMP) to deg C.
 inline float dvs_temp_c_from_raw(int raw) {
-return raw * DVS_TEMP_CAL_SCALE - DVS_TEMP_CAL_OFFSET;
+    return raw * DVS_AIRFLOW_CAL_SCALE - DVS_AIRFLOW_CAL_OFFSET;
 }
 
 // True when the trailing two bytes are a valid CRC over the body.

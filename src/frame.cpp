@@ -41,11 +41,11 @@ static int append_decode(const DvsFrame &f, char *out, size_t outLen, int n) {
     switch (reg) {
         case REG_TEMP:
             if (payloadLen >= 2) {
-                // Payload byte 0 is a raw roof-space sensor count (bytes 1,2
-                // seen as 0). Least-squares linear fit to 8 live points spanning
-                // 11~20 C: temp_C = 0.06807*raw - 1.039 (~14.7 counts/C), all
-                // residuals < 0.75 C (display is integer-rounded). May need
-                // revisiting at extremes - no data yet below ~11 C or above 20 C.
+                // Payload byte 0 is a raw airflow (supply-air) sensor count
+                // (bytes 1,2 seen as 0). Least-squares linear fit to 8 live
+                // points spanning 11-20 C: temp_C = 0.06807*raw - 1.039 (~14.7
+                // counts/C), all residuals < 0.75 C (display is integer-rounded).
+                // May need revisiting at extremes - no data below ~11 or above 20.
                 const int raw = (int)le_value(payload, payloadLen);
                 const float tc = dvs_temp_c_from_raw(raw);
                 n += snprintf(out + n, (n < (int)outLen) ? outLen - n : 0,

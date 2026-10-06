@@ -17,7 +17,7 @@ void netLoop();
 // Publish the current fan/tx state (power, speed, tx mode) to MQTT.
 void netPublishState();
 
-// Publish a sniffed roof-space temperature (deg C) to the temperature topic.
+// Publish a sniffed airflow (supply-air) temperature (deg C) to the temperature topic.
 // Returns true if it was actually sent (MQTT connected), false otherwise.
 bool netPublishTemperature(float celsius);
 

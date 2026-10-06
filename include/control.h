@@ -36,7 +36,7 @@ void dvsControlReportObserved(uint8_t targetSpeed);
 
 // --- Automatic ventilation control (summer / winter profiles) --------------
 // In `manual` mode the fan follows explicit power/speed commands (the behaviour
-// above). In `auto` mode a periodic tick computes a target speed from the roof
+// above). In `auto` mode a periodic tick computes a target speed from the airflow
 // (supply) temperature and the inside temperature via the profile logic and
 // drives the fan - but only while transmit is enabled, and it fails safe to OFF
 // when either temperature is stale.
@@ -63,23 +63,23 @@ DvsProfileSel dvsControlGetProfile();
 DvsProfile dvsControlGetEffectiveProfile();
 
 // Winter heat recovery: ramp the fan speed up above the moisture baseline to
-// harvest warm roof air when it is as warm as, or warmer than, the house. With
+// harvest warm airflow when it is as warm as, or warmer than, the house. With
 // it off the winter fan just holds the low moisture-ventilation baseline.
 void dvsControlSetHeatRecovery(bool on);
 bool dvsControlGetHeatRecovery();
 
-// Winter retain heat: when on, raw roof air below the cold cutoff (minSupply) is
-// too cold to supply, so the fan steps down and stops to keep the house warm.
-// With it off the fan keeps holding the moisture baseline below the cutoff
-// (prioritise condensation control over heat retention). Winter profile only.
-void dvsControlSetRetainHeat(bool on);
-bool dvsControlGetRetainHeat();
+// Winter heat retention: when on, raw airflow below the cold cutoff is too cold
+// to supply, so the fan steps down and stops to keep the house warm. With it off
+// the fan keeps holding the moisture baseline below the cutoff (prioritise
+// condensation control over heat retention). Winter profile only.
+void dvsControlSetHeatRetention(bool on);
+bool dvsControlGetHeatRetention();
 
-// Winter cold cutoff (minSupply, deg C): the roof temperature below which the fan
-// stops (retain heat on). Runtime-settable; boots to DVS_PROFILE_MIN_SUPPLY_C and
-// falls back to it when unset.
-void dvsControlSetMinSupply(float celsius);
-float dvsControlGetMinSupply();
+// Winter cold cutoff (deg C): the airflow temperature below which the fan stops
+// (heat retention on). Runtime-settable; boots to DVS_PROFILE_CUTOFF_C and falls
+// back to it when unset.
+void dvsControlSetCutoff(float celsius);
+float dvsControlGetCutoff();
 
 // Target (comfort) inside temperature (deg C): the single setpoint each profile
 // aims for. Winter ramps up to it (heat recovery) then holds the moisture
@@ -94,9 +94,9 @@ void dvsControlSetInsideTemp(float celsius);
 // Latest inside temperature. Returns false if none has ever been received.
 bool dvsControlGetInsideTemp(float *celsius);
 
-// Feed the roof (supply) temperature sniffed from the bus (deg C). Records the
+// Feed the airflow (supply) temperature sniffed from the bus (deg C). Records the
 // value and a freshness timestamp for the auto-control fail-safe.
-void dvsControlReportRoofTemp(float celsius);
+void dvsControlReportAirflowTemp(float celsius);
 
 // ---- Timed boost -----------------------------------------------------------
 // Drive the fan to full speed for `minutes` (0 cancels), overlaid on the current

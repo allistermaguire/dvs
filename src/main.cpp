@@ -123,13 +123,13 @@ static void printConfig() {
     const char *profStr = (sel == DVS_PROFILE_SEL_SUMMER) ? "summer" : "winter";
     float inside;
     const bool haveInside = dvsControlGetInsideTemp(&inside);
-    Serial.printf("[cfg] mode=%s profile=%s heatrec=%s retain=%s inside=%s\n",
+    Serial.printf("[cfg] mode=%s profile=%s heatrec=%s retention=%s inside=%s\n",
                   dvsControlGetMode() == DVS_MODE_AUTO ? "auto" : "manual", profStr,
                   dvsControlGetHeatRecovery() ? "on" : "off",
-                  dvsControlGetRetainHeat() ? "on" : "off",
+                  dvsControlGetHeatRetention() ? "on" : "off",
                   haveInside ? String(inside, 1).c_str() : "n/a");
     Serial.printf("[cfg] cutoff=%.1fC target=%.1fC\n",
-                (double)dvsControlGetMinSupply(),
+                (double)dvsControlGetCutoff(),
                 (double)dvsControlGetComfortTarget());
     Serial.printf("[cfg] boost=%u min remaining\n",
                   (unsigned)dvsControlBoostRemainingMin());
@@ -147,10 +147,10 @@ static void printHelp() {
     Serial.println(F("  speed <n>     set target fan speed 0..84"));
     Serial.println(F("  mode <manual|auto>      manual control vs auto profiles"));
     Serial.println(F("  profile <summer|winter> select ventilation profile"));
-    Serial.println(F("  heatrecovery [on|off]   winter warm-roof speed boost"));
-    Serial.println(F("  retain [on|off]         winter cold-cutoff stops fan"));
+    Serial.println(F("  heatrecovery [on|off]   winter warm-airflow speed boost"));
+    Serial.println(F("  heatretention [on|off]  winter: stop fan below the cold cutoff"));
     Serial.println(F("  cutoff <degC>           winter cold-cutoff temperature"));
-    Serial.println(F("  target <degC>           target (house) temperature"));
+    Serial.println(F("  target <degC>           set (target) temperature"));
     Serial.println(F("  inside <degC>           feed the inside temperature"));
     Serial.println(F("  boost <min|off>         run at full speed for N minutes"));
     Serial.println(F("  status        print current configuration"));
@@ -186,8 +186,8 @@ static void publishObserved(const DvsFrame &f) {
         }
         const float tc = dvs_temp_c_from_raw((int)raw);
         // Cache every reading (not just published ones) so the auto-control tick
-        // has a fresh roof (supply) temperature and can judge staleness.
-        dvsControlReportRoofTemp(tc);
+        // has a fresh airflow (supply) temperature and can judge staleness.
+        dvsControlReportAirflowTemp(tc);
         if ((int)raw != lastTempRaw) {
             // Only advance the dedupe cache once the value is actually sent,
             // so values seen before MQTT connects are not lost.
@@ -411,29 +411,29 @@ static void handleCommand(const String &raw) {
         }
         Serial.printf("[ok] heatrec=%s\n",
                       dvsControlGetHeatRecovery() ? "on" : "off");
-    } else if (cmd.startsWith("retainheat")) {
-        String arg = cmd.substring(10);
+    } else if (cmd.startsWith("heatretention ")) {
+        String arg = cmd.substring(13);
         arg.trim();
         switch (dvsParseTriState(arg.c_str())) {
-        case DVS_TRI_ON: dvsControlSetRetainHeat(true); break;
-        case DVS_TRI_OFF: dvsControlSetRetainHeat(false); break;
+        case DVS_TRI_ON: dvsControlSetHeatRetention(true); break;
+        case DVS_TRI_OFF: dvsControlSetHeatRetention(false); break;
         case DVS_TRI_TOGGLE:
-            dvsControlSetRetainHeat(!dvsControlGetRetainHeat());
+            dvsControlSetHeatRetention(!dvsControlGetHeatRetention());
             break;
         default:
-            Serial.println(F("[err] usage: retainheat [on|off]"));
+            Serial.println(F("[err] usage: heatretention [on|off]"));
             return;
         }
-        Serial.printf("[ok] retain=%s\n",
-                      dvsControlGetRetainHeat() ? "on" : "off");
+        Serial.printf("[ok] retention=%s\n",
+                      dvsControlGetHeatRetention() ? "on" : "off");
     } else if (cmd.startsWith("cutoff")) {
         String arg = cmd.substring(6);
         arg.trim();
         float t;
         if (dvsParseFloat(arg.c_str(), &t) && t >= DVS_CUTOFF_MIN_C &&
             t <= DVS_CUTOFF_MAX_C) {
-            dvsControlSetMinSupply(t);
-            Serial.printf("[ok] cutoff=%.1fc\n", (double)dvsControlGetMinSupply());
+            dvsControlSetCutoff(t);
+            Serial.printf("[ok] cutoff=%.1fC\n", (double)dvsControlGetCutoff());
         } else {
             Serial.println(F("[err] usage: cutoff <degC>"));
             return;
@@ -529,7 +529,7 @@ void dvsBusResetPollCycle() {
 // Send the request for the current transaction's register.
 static void pollSendRequest() {
     if (g_pollReg == REG_TEMP) {
-        dvsBusSend(REG_TEMP, nullptr, 0);           // roof-temperature query
+        dvsBusSend(REG_TEMP, nullptr, 0);           // airflow-temperature query
     } else {
         const uint8_t sp = dvsControlGetTxSpeed();
         dvsBusSend(REG_FAN_SPEED, &sp, 1);          // speed target / keepalive
@@ -627,7 +627,7 @@ void loop() {
         pollCycleStep();
     }
 
-    // Auto ventilation control: recompute a target speed from the roof and
+    // Auto ventilation control: recompute a target speed from the airflow and
     // inside temperatures on its own cadence (no-op in manual mode / listen-only).
     dvsControlAutoTick();
 
