@@ -119,12 +119,10 @@ static void printConfig() {
         RS485_RX_PIN, RS485_TX_PIN, RS485_DE_RE_PIN);
     Serial.printf("[cfg] badonly=%s badCount=%lu\n", g_badOnly ? "on" : "off",
                   (unsigned long)g_badFrameCount);
-    const DvsProfileSel sel = dvsControlGetProfile();
-    const char *profStr = (sel == DVS_PROFILE_SEL_SUMMER) ? "summer" : "winter";
     float inside;
     const bool haveInside = dvsControlGetInsideTemp(&inside);
-    Serial.printf("[cfg] mode=%s profile=%s heatrec=%s retention=%s inside=%s\n",
-                  dvsControlGetMode() == DVS_MODE_AUTO ? "auto" : "manual", profStr,
+    Serial.printf("[cfg] profile=%s heatrec=%s retention=%s inside=%s\n",
+                  dvsControlProfileName(dvsControlGetProfile()),
                   dvsControlGetHeatRecovery() ? "on" : "off",
                   dvsControlGetHeatRetention() ? "on" : "off",
                   haveInside ? String(inside, 1).c_str() : "n/a");
@@ -145,8 +143,7 @@ static void printHelp() {
     Serial.println(F("  on            power the fan on (last/default speed)"));
     Serial.println(F("  off           power the fan off (stop)"));
     Serial.println(F("  speed <n>     set target fan speed 0..84"));
-    Serial.println(F("  mode <manual|auto>      manual control vs auto profiles"));
-    Serial.println(F("  profile <summer|winter> select ventilation profile"));
+    Serial.println(F("  profile <manual|winter|summer> manual control vs auto season"));
     Serial.println(F("  heatrecovery [on|off]   winter warm-airflow speed boost"));
     Serial.println(F("  heatretention [on|off]  winter: stop fan below the cold cutoff"));
     Serial.println(F("  cutoff <degC>           winter cold-cutoff temperature"));
@@ -377,15 +374,6 @@ static void handleCommand(const String &raw) {
         } else {
             Serial.printf("[err] usage: speed <0..%u>\n", (unsigned)DVS_MAX_SPEED);
         }
-    } else if (cmd.startsWith("mode")) {
-        String arg = cmd.substring(4);
-        arg.trim();
-        DvsControlMode mode;
-        if (dvsParseMode(arg.c_str(), &mode)) {
-            dvsControlSetMode(mode);
-        } else {
-            Serial.println(F("[err] usage: mode <manual|auto>"));
-        }
     } else if (cmd.startsWith("profile")) {
         String arg = cmd.substring(7);
         arg.trim();
@@ -393,7 +381,7 @@ static void handleCommand(const String &raw) {
         if (dvsParseProfile(arg.c_str(), &sel)) {
             dvsControlSetProfile(sel);
         } else {
-            Serial.println(F("[err] usage: profile <summer|winter>"));
+            Serial.println(F("[err] usage: profile <manual|winter|summer>"));
             return;
         }
     } else if (cmd.startsWith("heatrecovery")) {

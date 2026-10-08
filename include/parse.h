@@ -4,12 +4,12 @@
 #include <string.h>
 #include <strings.h> // strcasecmp on host/native builds
 
-#include "control.h" // DvsControlMode / DvsProfileSel for the mode/profile parsers
+#include "control.h" // DvsProfileSel for the profile parser
 
 // Small argument parsers shared by the USB console and the MQTT command layer,
 // so the two do not each re-implement the same string matching. The numeric and
-// mode/profile parsers are strict: they reject invalid input instead of coercing
-// it to 0/defaults (a bad payload must not silently power the fan off or feed a
+// profile parsers are strict: they reject invalid input instead of coercing it
+// to 0/defaults (a bad payload must not silently power the fan off or feed a
 // bogus 0 C into auto control).
 
 enum DvsTriState {
@@ -87,41 +87,28 @@ inline bool dvsParseFloat(const char *arg, float *out) {
     return true;
 }
 
-// Parse a control mode (manual|auto). Returns false on any other token.
-inline bool dvsParseMode(const char *arg, DvsControlMode *out) {
+// Parse a profile selection (manual|winter|summer). Returns false on any other
+// token, so an unrecognised profile (including the removed "auto") is rejected
+// rather than silently coerced.
+inline bool dvsParseProfile(const char *arg, DvsProfileSel *out) {
     if (arg == nullptr) {
         return false;
     }
     if (strcasecmp(arg, "manual") == 0) {
         if (out != nullptr) {
-            *out = DVS_MODE_MANUAL;
-        }
-        return true;
-    }
-    if (strcasecmp(arg, "auto") == 0) {
-        if (out != nullptr) {
-            *out = DVS_MODE_AUTO;
-        }
-        return true;
-    }
-    return false;
-}
-
-// Parse a profile selection (summer|winter). Returns false on any other token,
-// so an unrecognised profile is rejected rather than silently coerced.
-inline bool dvsParseProfile(const char *arg, DvsProfileSel *out) {
-    if (arg == nullptr) {
-        return false;
-    }
-    if (strcasecmp(arg, "summer") == 0) {
-        if (out != nullptr) {
-            *out = DVS_PROFILE_SEL_SUMMER;
+            *out = DVS_PROFILE_SEL_MANUAL;
         }
         return true;
     }
     if (strcasecmp(arg, "winter") == 0) {
         if (out != nullptr) {
             *out = DVS_PROFILE_SEL_WINTER;
+        }
+        return true;
+    }
+    if (strcasecmp(arg, "summer") == 0) {
+        if (out != nullptr) {
+            *out = DVS_PROFILE_SEL_SUMMER;
         }
         return true;
     }

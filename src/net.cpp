@@ -31,7 +31,7 @@ static uint32_t s_lastStatePublish = 0;
 static bool s_otaStarted = false;
 static bool s_otaInProgress = false;
 
-// One-shot restore of mode/profile/tx/heat_recovery/heat_retention/cutoff_temp/
+// One-shot restore of profile/tx/heat_recovery/heat_retention/cutoff_temp/
 // target_temp from the retained */state topics on the first connect after boot.
 // While active we suspend our own state publishing so the retained values aren't
 // clobbered before we read them back.
@@ -65,11 +65,8 @@ void netPublishState() {
     s_mqtt.publish(MQTT_TOPIC_TX_STATE, dvsControlGetTxEnabled() ? "ON" : "OFF",
                    true);
     // Auto-control state.
-    s_mqtt.publish(MQTT_TOPIC_MODE_STATE,
-                  dvsControlGetMode() == DVS_MODE_AUTO ? "auto" : "manual", true);
-    const DvsProfileSel sel = dvsControlGetProfile();
     s_mqtt.publish(MQTT_TOPIC_PROFILE_STATE,
-                   sel == DVS_PROFILE_SEL_SUMMER ? "summer" : "winter", true);
+                   dvsControlProfileName(dvsControlGetProfile()), true);
     s_mqtt.publish(MQTT_TOPIC_HEATREC_STATE,
                    dvsControlGetHeatRecovery() ? "ON" : "OFF", true);
     s_mqtt.publish(MQTT_TOPIC_RETENTION_STATE,
@@ -97,13 +94,7 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
     // Boot restore: apply the retained */state values via the setters only (the
     // setters don't publish, so this can't loop back to us while subscribed).
     if (s_restoreActive) {
-        if (strcmp(topic, MQTT_TOPIC_MODE_STATE) == 0) {
-            DvsControlMode mode;
-            if (dvsParseMode(msg, &mode)) {
-                dvsControlSetMode(mode);
-            }
-            return;
-        } else if (strcmp(topic, MQTT_TOPIC_PROFILE_STATE) == 0) {
+        if (strcmp(topic, MQTT_TOPIC_PROFILE_STATE) == 0) {
             DvsProfileSel sel;
             if (dvsParseProfile(msg, &sel)) {
                 dvsControlSetProfile(sel);
@@ -153,12 +144,6 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
 			dvsControlSetInsideTemp(t);
 			netPublishState();
 		}
-	} else if (strcmp(topic, MQTT_TOPIC_MODE_SET) == 0) {
-		DvsControlMode mode;
-        if (dvsParseMode(msg, &mode)) {
-            dvsControlSetMode(mode);
-            netPublishState();
-        }
 	} else if (strcmp(topic, MQTT_TOPIC_PROFILE_SET) == 0) {
 		DvsProfileSel sel;
 		if (dvsParseProfile(msg, &sel)) {
@@ -207,13 +192,10 @@ static void publishDiscovery() {
     char buf[512];
 
     // Fan: on/off via power topics, percentage via speed topics (range 1..max).
-    // Preset modes: auto/manual via mode topics.
     snprintf(buf, sizeof(buf),
              "{\"name\":\"Ventilation\",\"uniq_id\":\"dvs_fan\","
              "\"cmd_t\":\"" MQTT_TOPIC_POWER_SET "\",\"stat_t\":\"" MQTT_TOPIC_POWER_STATE "\","
              "\"pct_cmd_t\":\"" MQTT_TOPIC_SPEED_SET "\",\"pct_stat_t\":\"" MQTT_TOPIC_SPEED_STATE "\","
-             "\"pr_mode_cmd_t\":\"" MQTT_TOPIC_MODE_SET "\",\"pr_mode_stat_t\":\"" MQTT_TOPIC_MODE_STATE "\","
-             "\"preset_modes\":[\"manual\",\"auto\"],"
              "\"spd_rng_min\":1,\"spd_rng_max\":%d,\"pl_on\":\"ON\",\"pl_off\":\"OFF\","
              HA_AVAIL "," HA_DEVICE "}",
              DVS_MAX_SPEED);
@@ -246,22 +228,13 @@ static void publishDiscovery() {
         HA_AVAIL "," HA_DEVICE "}",
         true);
 
-	// Control mode select (manual vs automatic summer/winter profiles).
-	s_mqtt.publish(
-		HA_DISCOVERY_PREFIX "/select/dvs/mode/config",
-		"{\"name\":\"Control Mode\",\"uniq_id\":\"dvs_mode\","
-		"\"cmd_t\":\"" MQTT_TOPIC_MODE_SET "\",\"stat_t\":\"" MQTT_TOPIC_MODE_STATE "\","
-		"\"options\":[\"manual\",\"auto\"],\"ent_cat\":\"config\","
-		HA_AVAIL "," HA_DEVICE "}",
-		true);
-
-    // Ventilation profile select (summer/winter, chosen explicitly or by an
-    // external automation - there is no auto season-switch).
+    // Profile select: manual control vs automatic winter/summer seasons (merges
+    // the old control-mode + season selectors into one axis).
 	s_mqtt.publish(
 		HA_DISCOVERY_PREFIX "/select/dvs/profile/config",
 		"{\"name\":\"Profile\",\"uniq_id\":\"dvs_profile\","
 		"\"cmd_t\":\"" MQTT_TOPIC_PROFILE_SET "\",\"stat_t\":\"" MQTT_TOPIC_PROFILE_STATE "\","
-        "\"options\":[\"summer\",\"winter\"],\"ent_cat\":\"config\","
+        "\"options\":[\"manual\",\"winter\",\"summer\"],\"ent_cat\":\"config\","
 		HA_AVAIL "," HA_DEVICE "}",
 		true);
 
@@ -359,7 +332,6 @@ static bool mqttConnect() {
         s_mqtt.subscribe(MQTT_TOPIC_SPEED_SET);
         s_mqtt.subscribe(MQTT_TOPIC_TX_SET);
 		s_mqtt.subscribe(MQTT_TOPIC_INSIDE_SET);
-		s_mqtt.subscribe(MQTT_TOPIC_MODE_SET);
 		s_mqtt.subscribe(MQTT_TOPIC_PROFILE_SET);
 		s_mqtt.subscribe(MQTT_TOPIC_HEATREC_SET);
         s_mqtt.subscribe(MQTT_TOPIC_RETENTION_SET);
@@ -372,7 +344,6 @@ static bool mqttConnect() {
         if (!s_restoreDone) {
             // First connect after boot: read the retained settings back before
             // publishing our own (default) state over the top of them.
-            s_mqtt.subscribe(MQTT_TOPIC_MODE_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_PROFILE_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_TX_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_HEATREC_STATE);
@@ -474,7 +445,6 @@ void netLoop() {
         // publish the restored (or default) state once more without loopback.
         s_restoreActive = false;
         s_restoreDone = true;
-        s_mqtt.unsubscribe(MQTT_TOPIC_MODE_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_PROFILE_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_TX_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_HEATREC_STATE);

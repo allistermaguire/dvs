@@ -184,7 +184,7 @@ include/
   frame.h                       Frame struct, CRC verify, decode + formatter, frame builder
   control.h                     Fan control + auto-ventilation API
   bus.h                         RS485 transmit seam (dvsBusSend / poll-cycle reset)
-  parse.h                       Shared argument parsers: on/off/toggle + strict numeric/mode/profile (console + MQTT)
+  parse.h                       Shared argument parsers: on/off/toggle + strict numeric/profile (console + MQTT)
   profile.h                     Pure summer/winter speed-vs-temperature logic + fail-safe freshness gate
   boost.h                       Pure timed-boost helpers (active window / remaining / tx-speed overlay)
   net.h                         Wi-Fi = MQTT bridge API
@@ -261,16 +261,15 @@ live data:
 | `on`          | Power the fan on (last used / default speed) – transmits        |
 | `off`         | Power the fan off (stop) – transmits                            |
 | `speed <n>`   | Set target fan speed `0..84` – transmits                        |
-| `mode [manual\|auto]` | Manual control vs. automatic summer/winter profiles |
-| `profile <summer\|winter>` | Select the ventilation profile (season) |
+| `profile <manual\|winter\|summer>` | Manual control vs. automatic winter/summer season |
 | `heatrecovery [on\|off]` | Winter warm-airflow speed boost on/off/toggle              |
 | `heatretention [on\|off]`| Winter: stop the fan below the cold cutoff to keep house heat |
 | `cutoff <°C>`          | Winter cold-cutoff temperature (airflow below this stops the fan) |
 | `target <°C>`          | Set temperature the control aims for      
-| `inside <°C>` | Feed the inside temperature used by auto control |
+| `inside <°C>`   | Feed the inside temperature used by auto control |
 | `boost <min\|off>` | Run the fan at full speed for N minutes (`off`/`0` cancels) |
-| `status` | Print the current configuration (incl. mode/profile/inside) |
-| `help` | List commands |
+| `status`        | Print the current configuration (incl. profile/inside) |
+| `help`          | List commands |
 
 ## Automatic ventilation profiles
 
@@ -317,8 +316,8 @@ HA automation that switches the season by date/weather.
 
 **Engaging it.** Auto control only drives the fan when **all** of these hold:
 
-1. `mode auto` - the default is `manual`, and *selecting a profile alone does
-   nothing*;
+1. `profile winter` or `profile summer` - the default is `manual` (the fan
+   follows your explicit speed/power commands and the season logic is idle);
 2. `tx on` - in listen-only the controller is inert and the fan is left to the
    wall controller; and
 3. a **fresh** airflow temperature and an inside temperature received at least once
@@ -408,9 +407,8 @@ The base topic is `dvs`:
 | `dvs/inside_temp/set`   | in  | e.g. `18.5`                  | Inside temperature for auto control (feed from HA)                         |
 | `dvs/inside_temp/state` | out | e.g. `18.5`                  | Last inside temperature received (retained)                                |
 | `dvs/mode/set`          | in  | `manual`/`auto`              | Manual control vs. automatic profiles                                      |
-| `dvs/mode/state`        | out | `manual`/`auto`              | Current control mode (retained)                                            |
-| `dvs/profile/set`       | in  | `summer`/`winter`            | Selected ventilation profile                                               |
-| `dvs/profile/state`     | out | `summer`/`winter`            | Current profile (retained)                                                 |
+| `dvs/profile/set`       | in  | `manual`/`winter`/`summer`   | Manual control vs. automatic winter/summer season                          |
+| `dvs/profile/state`     | out | `manual`/`winter`/`summer`   | Current profile (retained)                                                 |
 | `dvs/heat_recovery/set`     | in  | `ON` / `OFF`             | Winter warm-airflow speed boost                                            |
 | `dvs/heat_recovery/state`   | out | `ON` / `OFF`             | Heat-recovery state (retained)                                             |
 | `dvs/heat_retention/set`    | in  | `ON` / `OFF`             | Winter: throttle down / stop below the cold cutoff to keep house heat      |
@@ -438,7 +436,7 @@ device - no YAML required:
 - a **fan** entity (on/off + speed as a percentage over the `1..84` range),
 - **sensors** for airflow temperature and fan speed,
 - a **switch** for transmit mode (listen-only vs listen+send),
-- **selects** for control mode (`manual`/`auto`) and profile (`summer`/`winter`),
+- a **select** for profile (`manual`/`winter`/`summer` - the merged control-mode + season),
 - a **switch** for winter heat recovery (warm-airflow speed boost),
 - a **switch** for winter heat retention (stop below the cold cutoff to keep house heat),
 - a **number** for the winter cold-cutoof temperature,

@@ -1,9 +1,9 @@
 // Host-side unit tests for the shared argument parsers: `pio test -e native`.
 //
-// These pin the strict-rejection behaviour: a malformed numeric/mode/profile
-// token must be rejected (leaving the caller's value untouched) rather than
-// coerced to 0/defaults, so a bad MQTT payload cannot silently power the fan off
-// or feed a bogus 0 C into auto control.
+// These pin the strict-rejection behaviour: a malformed numeric/profile token
+// must be rejected (leaving the caller's value untouched) rather than coerced to
+// 0/defaults, so a bad MQTT payload cannot silently power the fan off or feed a
+// bogus 0 C into auto control.
 
 #include <unity.h>
 
@@ -69,30 +69,22 @@ void test_float_rejects_and_preserves_out() {
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 99.0f, f);
 }
 
-// --- Mode / profile parsers --------------------------------------------------
+// --- Profile parser --------------------------------------------------------
 
-void test_mode_parser() {
-    DvsControlMode m = DVS_MODE_AUTO;
-    TEST_ASSERT_TRUE(dvsParseMode("manual", &m));
-    TEST_ASSERT_EQUAL_INT(DVS_MODE_MANUAL, m);
-    TEST_ASSERT_TRUE(dvsParseMode("AUTO", &m));
-    TEST_ASSERT_EQUAL_INT(DVS_MODE_AUTO, m);
-    TEST_ASSERT_FALSE(dvsParseMode("bogus", &m));
-    TEST_ASSERT_EQUAL_INT(DVS_MODE_AUTO, m); // untouched on reject
-}
-
-void test_profile_parser_rejects_unknown() {
-    DvsProfileSel s = DVS_PROFILE_SEL_WINTER;
+void test_profile_parser() {
+    DvsProfileSel s = DVS_PROFILE_SEL_SUMMER;
+    TEST_ASSERT_TRUE(dvsParseProfile("manual", &s));
+    TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_MANUAL, s);
+    TEST_ASSERT_TRUE(dvsParseProfile("WINTER", &s));
+    TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_WINTER, s);
     TEST_ASSERT_TRUE(dvsParseProfile("summer", &s));
     TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_SUMMER, s);
-    TEST_ASSERT_TRUE(dvsParseProfile("winter", &s));
-    TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_WINTER, s);
     // Unrecognised profiles (including the removed "auto") are rejected, not
     // silently coerced.
     TEST_ASSERT_FALSE(dvsParseProfile("auto", &s));
-    TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_WINTER, s); // untouched on reject
+    TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_SUMMER, s); // untouched on reject
     TEST_ASSERT_FALSE(dvsParseProfile("spring", &s));
-    TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_WINTER, s);
+    TEST_ASSERT_EQUAL_INT(DVS_PROFILE_SEL_SUMMER, s);
 }
 
 int main(int, char **) {
@@ -103,7 +95,6 @@ int main(int, char **) {
     RUN_TEST(test_int_range_allows_trailing_whitespace);
     RUN_TEST(test_float_accepts_valid);
     RUN_TEST(test_float_rejects_and_preserves_out);
-    RUN_TEST(test_mode_parser);
-    RUN_TEST(test_profile_parser_rejects_unknown);
+    RUN_TEST(test_profile_parser);
     return UNITY_END();
 }

@@ -246,14 +246,12 @@ static constexpr uint32_t DVS_MQTT_RESTORE_WINDOW_MS = 1500;
 #define MQTT_TOPIC_TX_SET        MQTT_TOPIC_BASE "/tx/set"       // in:  ON / OFF (send vs listen)
 #define MQTT_TOPIC_TX_STATE      MQTT_TOPIC_BASE "/tx/state"     // out: ON / OFF
 // Automatic ventilation control. Inside temperature is fed in (e.g. from a Home
-// Assistant sensor); mode/profile select the summer/winter behaviour and heat
-// recovery toggles the winter warm-airflow speed boost.
+// Assistant sensor); the profile selects manual / winter / summer behaviour and
+// heat recovery toggles the winter warm-airflow speed boost.
 #define MQTT_TOPIC_INSIDE_SET     MQTT_TOPIC_BASE "/inside_temp/set"  // in:  deg C
 #define MQTT_TOPIC_INSIDE_STATE   MQTT_TOPIC_BASE "/inside_temp/state"  // out: deg C (echo)
-#define MQTT_TOPIC_MODE_SET       MQTT_TOPIC_BASE "/mode/set"         // in:  manual / auto
-#define MQTT_TOPIC_MODE_STATE     MQTT_TOPIC_BASE "/mode/state"       // out: manual / auto
-#define MQTT_TOPIC_PROFILE_SET    MQTT_TOPIC_BASE "/profile/set"        // in: summer / winter
-#define MQTT_TOPIC_PROFILE_STATE  MQTT_TOPIC_BASE "/profile/state"      // out: summer / winter
+#define MQTT_TOPIC_PROFILE_SET    MQTT_TOPIC_BASE "/profile/set"   // in:  manual / winter / summer
+#define MQTT_TOPIC_PROFILE_STATE  MQTT_TOPIC_BASE "/profile/state" // out: manual / winter / summer
 #define MQTT_TOPIC_HEATREC_SET    MQTT_TOPIC_BASE "/heat_recovery/set"   // in:  ON / OFF
 #define MQTT_TOPIC_HEATREC_STATE  MQTT_TOPIC_BASE "/heat_recovery/state" // out: ON / OFF
 #define MQTT_TOPIC_RETENTION_SET   MQTT_TOPIC_BASE "/heat_retention/set"   // in:  ON / OFF

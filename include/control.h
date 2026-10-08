@@ -34,33 +34,26 @@ bool dvsControlGetTxEnabled();
 // the real fan as commanded by the existing wall controller.
 void dvsControlReportObserved(uint8_t targetSpeed);
 
-// --- Automatic ventilation control (summer / winter profiles) --------------
-// In `manual` mode the fan follows explicit power/speed commands (the behaviour
-// above). In `auto` mode a periodic tick computes a target speed from the airflow
-// (supply) temperature and the inside temperature via the profile logic and
+// --- Automatic ventilation control (manual / winter / summer profile) ---------
+// A single profile selector merges the old control-mode (manual vs auto) and
+// season (summer vs winter) selectors. In the `manual` profile the fan follows
+// explicit power/speed commands (the behaviour above). In the `winter` or
+// `summer` profile a periodic tick computes a target speed from the airflow
+// (supply) temperature and the inside temperature via that season's logic and
 // drives the fan - but only while transmit is enabled, and it fails safe to OFF
-// when either temperature is stale.
-enum DvsControlMode : uint8_t {
-    DVS_MODE_MANUAL = 0,
-    DVS_MODE_AUTO = 1,
-};
-
-// Profile selection: summer or winter, chosen explicitly (by the user or an
-// external automation, e.g. a Home Assistant seasonal switch). There is no
-// built-in auto season-switch: a single comfort setpoint can't tell a warm
-// winter day from summer, so it would wrongly flip into active cooling.
+// when either temperature is stale. There is no auto season-switch: a single
+// comfort setpoint can't tell a warm winter day from summer, so the season is
+// chosen explicitly (by the user or an external automation, e.g. a HA switch).
 enum DvsProfileSel : uint8_t {
-    DVS_PROFILE_SEL_SUMMER = 0,
+    DVS_PROFILE_SEL_MANUAL = 0,
     DVS_PROFILE_SEL_WINTER = 1,
+    DVS_PROFILE_SEL_SUMMER = 2,
 };
-
-void dvsControlSetMode(DvsControlMode mode);
-DvsControlMode dvsControlGetMode();
 
 void dvsControlSetProfile(DvsProfileSel sel);
 DvsProfileSel dvsControlGetProfile();
-// The profile actually in effect right now (summer or winter).
-DvsProfile dvsControlGetEffectiveProfile();
+// Human-readable profile name ("manual" / "winter" / "summer").
+const char *dvsControlProfileName(DvsProfileSel sel);
 
 // Winter heat recovery: ramp the fan speed up above the moisture baseline to
 // harvest warm airflow when it is as warm as, or warmer than, the house. With
@@ -113,5 +106,5 @@ uint8_t dvsControlGetTxSpeed();
 bool dvsControlBoostTick();
 
 // Run one non-blocking step of the auto-control loop. Call from loop(); it only
-// acts on its own DVS_CONTROL_TICK_MS cadence and only in auto mode.
+// acts on its own DVS_CONTROL_TICK_MS cadence and only in a seasonal profile.
 void dvsControlAutoTick();

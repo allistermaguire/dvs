@@ -27,9 +27,7 @@ static uint8_t g_lastNonZeroSpeed = 0;    // remembered speed for a bare "power 
 static uint32_t g_boostUntilMs = 0;       // full-speed boost deadline (0 => none)
 
 // --- Auto ventilation control state ------------------------------------------
-static DvsControlMode g_controlMode = DVS_MODE_MANUAL;      // manual vs auto profile
-static DvsProfileSel g_profileSel = DVS_PROFILE_SEL_WINTER; // summer/winter (no auto)
-static DvsProfile g_effectiveProfile = DVS_PROFILE_WINTER;  // AUTO resolved value
+static DvsProfileSel g_profileSel = DVS_PROFILE_SEL_MANUAL; // manual / winter / summer
 static bool g_heatRecovery = DVS_HEAT_RECOVERY_DEFAULT;     // winter warm-airflow boost
 static bool g_heatRetention = DVS_HEAT_RETENTION_DEFAULT;   // winter cold cutoff stops fan
 static float g_insideTempC = 0.0f;          // last inside temp fed in (MQTT)
@@ -51,9 +49,9 @@ static DvsProfileConfig g_profileCfg = {
     DVS_PROFILE_MOISTURE_SPEED,   DVS_PROFILE_MAX_SPEED,
 };
 
-// Map the selected profile to the one in effect. There is no AUTO option - the
-// user (or an external automation such as a Home Assistant seasonal switch)
-// chooses summer or winter directly.
+// Map the selected profile to the pure season logic. Only meaningful for a
+// seasonal profile; manual maps to winter as a harmless default (auto-control
+// never runs in manual, so the value is unused there).
 static DvsProfile controlResolveProfile() {
     return g_profileSel == DVS_PROFILE_SEL_SUMMER ? DVS_PROFILE_SUMMER
                                                 : DVS_PROFILE_WINTER;
@@ -174,25 +172,23 @@ bool dvsControlBoostTick() {
 }
 
 // --- Automatic ventilation control (declared in control.h) -------------------
-void dvsControlSetMode(DvsControlMode mode) {
-    if (g_controlMode == mode) {
-        return;
+const char *dvsControlProfileName(DvsProfileSel sel) {
+    switch (sel) {
+        case DVS_PROFILE_SEL_WINTER: return "winter";
+        case DVS_PROFILE_SEL_SUMMER: return "summer";
+        default: return "manual";
     }
-    g_controlMode = mode;
-    g_lastControlTickMs = 0; // recompute on the next loop iteration
-    Serial.printf("[ok] mode=%s\n", mode == DVS_MODE_AUTO ? "auto" : "manual");
 }
-DvsControlMode dvsControlGetMode() { return g_controlMode; }
 
 void dvsControlSetProfile(DvsProfileSel sel) {
+    if (g_profileSel == sel) {
+        return;
+    }
     g_profileSel = sel;
-    g_effectiveProfile = controlResolveProfile(); // report state immediately
-    g_lastControlTickMs = 0;                      // act on the change promptly
-    Serial.printf("[ok] profile=%s\n",
-                  sel == DVS_PROFILE_SEL_SUMMER ? "summer" : "winter");
+    g_lastControlTickMs = 0; // act on the change promptly
+    Serial.printf("[ok] profile=%s\n", dvsControlProfileName(sel));
 }
 DvsProfileSel dvsControlGetProfile() { return g_profileSel; }
-DvsProfile dvsControlGetEffectiveProfile() { return g_effectiveProfile; }
 
 void dvsControlSetHeatRecovery(bool on) { g_heatRecovery = on; }
 bool dvsControlGetHeatRecovery() { return g_heatRecovery; }
@@ -223,7 +219,7 @@ bool dvsControlGetInsideTemp(float *celsius) {
 }
 
 void dvsControlAutoTick() {
-    if (g_controlMode != DVS_MODE_AUTO) {
+    if (g_profileSel == DVS_PROFILE_SEL_MANUAL) {
         return;
     }
     const uint32_t nowMs = millis();
@@ -254,14 +250,12 @@ void dvsControlAutoTick() {
         return;
     }
 
-    g_effectiveProfile = controlResolveProfile();
-
     DvsProfileInputs in;
     in.airflowTempC = g_airflowTempC;
     in.insideTempC = g_insideTempC;
     in.heatRecovery = g_heatRecovery;
     in.heatRetention = g_heatRetention;
-    in.profile = g_effectiveProfile;
+    in.profile = controlResolveProfile();
 
     const uint8_t target = dvsProfileSpeed(in, g_profileCfg, g_fanSpeed);
     if (target == 0) {
