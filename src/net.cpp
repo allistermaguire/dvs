@@ -31,8 +31,8 @@ static uint32_t s_lastStatePublish = 0;
 static bool s_otaStarted = false;
 static bool s_otaInProgress = false;
 
-// One-shot restore of profile/tx/heat_recovery/heat_retention/cutoff_temp/
-// target_temp from the retained */state topics on the first connect after boot.
+// One-shot restore of standby/profile/tx/heat_recovery/heat_retention/
+// cutoff_temp/target_temp from the retained */state topics on first connect.
 // While active we suspend our own state publishing so the retained values aren't
 // clobbered before we read them back.
 static bool s_restoreDone = false;
@@ -57,7 +57,12 @@ void netPublishState() {
     if (!s_mqtt.connected()) {
         return;
     }
-    s_mqtt.publish(MQTT_TOPIC_POWER_STATE, dvsControlGetPower() ? "ON" : "OFF",
+    // Power state is the ACTUAL fan run state (off while a season idles the fan),
+    // so Homekit doesn't render an on-but-0s fan as 1%. The user-off intent is
+    // carried separately on the standby topic (for persistence).
+    s_mqtt.publish(MQTT_TOPIC_POWER_STATE, dvsControlGetPower() ? "ON" : "OFF", 
+                   true);
+    s_mqtt.publish(MQTT_TOPIC_STANDBY_STATE, dvsControlGetStandby() ? "ON" : "OFF", 
                    true);
     char buf[8];
     snprintf(buf, sizeof(buf), "%u", (unsigned)dvsControlGetSpeed());
@@ -99,6 +104,9 @@ static void onMessage(char *topic, uint8_t *payload, unsigned int len) {
             if (dvsParseProfile(msg, &sel)) {
                 dvsControlSetProfile(sel);
             }
+            return;
+        } else if (strcmp(topic, MQTT_TOPIC_STANDBY_STATE) == 0) {
+            dvsControlSetStandby(!dvsParseOnOff(msg));
             return;
         } else if (strcmp(topic, MQTT_TOPIC_TX_STATE) == 0) {
             dvsControlSetTxEnabled(dvsParseOnOff(msg));
@@ -344,6 +352,7 @@ static bool mqttConnect() {
         if (!s_restoreDone) {
             // First connect after boot: read the retained settings back before
             // publishing our own (default) state over the top of them.
+            s_mqtt.subscribe(MQTT_TOPIC_STANDBY_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_PROFILE_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_TX_STATE);
             s_mqtt.subscribe(MQTT_TOPIC_HEATREC_STATE);
@@ -445,6 +454,7 @@ void netLoop() {
         // publish the restored (or default) state once more without loopback.
         s_restoreActive = false;
         s_restoreDone = true;
+        s_mqtt.unsubscribe(MQTT_TOPIC_STANDBY_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_PROFILE_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_TX_STATE);
         s_mqtt.unsubscribe(MQTT_TOPIC_HEATREC_STATE);

@@ -121,7 +121,8 @@ static void printConfig() {
                   (unsigned long)g_badFrameCount);
     float inside;
     const bool haveInside = dvsControlGetInsideTemp(&inside);
-    Serial.printf("[cfg] profile=%s heatrec=%s retention=%s inside=%s\n",
+    Serial.printf("[cfg] power=%s profile=%s heatrec=%s retention=%s inside=%s\n",
+                  dvsControlGetStandby() ? "off" : "on",
                   dvsControlProfileName(dvsControlGetProfile()),
                   dvsControlGetHeatRecovery() ? "on" : "off",
                   dvsControlGetHeatRetention() ? "on" : "off",

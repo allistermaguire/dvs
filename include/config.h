@@ -238,7 +238,8 @@ static constexpr uint32_t DVS_MQTT_RESTORE_WINDOW_MS = 1500;
 #define MQTT_TOPIC_BASE          "dvs"
 #define MQTT_TOPIC_AVAILABILITY  MQTT_TOPIC_BASE "/status"       // online/offline (LWT)
 #define MQTT_TOPIC_POWER_SET     MQTT_TOPIC_BASE "/power/set"    // in:  ON / OFF
-#define MQTT_TOPIC_POWER_STATE   MQTT_TOPIC_BASE "/power/state"  // out: ON / OFF
+#define MQTT_TOPIC_POWER_STATE   MQTT_TOPIC_BASE "/power/state"  // out: ON / OFF (actual run state)
+#define MQTT_TOPIC_STANDBY_STATE   MQTT_TOPIC_BASE "/standby/state"  // out: ON / OFF (user-off intend, restored)
 #define MQTT_TOPIC_SPEED_SET     MQTT_TOPIC_BASE "/speed/set"    // in:  0..84
 #define MQTT_TOPIC_SPEED_STATE   MQTT_TOPIC_BASE "/speed/state"  // out: commanded 0..84
 #define MQTT_TOPIC_ACTUAL_SPEED  MQTT_TOPIC_BASE "/speed/actual" // out: sniffed actual

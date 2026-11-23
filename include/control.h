@@ -12,7 +12,8 @@
 
 // Turn the fan on (resume last non-zero speed, or DVS_DEFAULT_SPEED) or off.
 // "Off" writes fan-speed target 0 (register 0x15); there is no separate stop
-// regsiter on this bus.
+// register on this bus. Power off also sets standby (see below): it holds the
+// fan off and suspends seasonal auto-control so it will not re-power the fan.
 void dvsControlSetPower(bool on);
 
 // Command a target fan speed 0..DVS_MAX_SPEED (register 0x15). Speed 0 is
@@ -22,6 +23,15 @@ void dvsControlSetSpeed(uint8_t speed);
 // Current commanded state (what we last told the fan to do).
 bool dvsControlGetPower();
 uint8_t dvsControlGetSpeed();
+
+// Standby = the user-off intent. When on, the fan is held off AND seasonal
+// auto-control is suspended (it won't re-power the fan), while the selected
+// profile/season is remembered. It is cleared by powering on, commanding a
+// speed, or restoring an on state. dvsControlSetPower() is the usual way to
+// toggle it; the explicit setter restores the persisted state at boot without
+// the transmit/resume side effects of a power command.
+void dvsControlSetStandby(bool standby);
+bool dvsControlGetStandby();
 
 // Transmit mode. When disabled the firmware is listen-only: control commands are
 // ignored and nothing is ever driven onto the bus. When enabled it may transmit

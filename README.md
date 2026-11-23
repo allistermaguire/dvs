@@ -398,8 +398,9 @@ The base topic is `dvs`:
 | `dvs/status`            | out | `online`/`offline`           | Availability (retained, MQTT LWT)                                          |
 | `dvs/tx/set`            | in  | `ON` / `OFF`                 | Enable send (`ON`) or listen-only (`OFF`)                                  |
 | `dvs/tx/state`          | out | `ON` / `OFF`                 | Current transmit mode (retained)                                           |
-| `dvs/power/set`         | in  | `ON` / `OFF`                 | Turn the fan on or off                                                     |
-| `dvs/power/state`       | out | `ON` / `OFF`                 | Commanded power state (retained)                                           |
+| `dvs/power/set`         | in  | `ON` / `OFF`                 | Turn the fan on or off; `OFF` holds it off and suspends auto (standby)     |
+| `dvs/power/state`       | out | `ON` / `OFF`                 | Actual fan run stat (off while a season idles the fan) (retained)          |
+| `dvs/standby/state`     | out | `ON` / `OFF`                 | User-off intent; heldd off + auto suspendded (retained, restored on boot)  |
 | `dvs/speed/set`         | in  | `0`..`84`                    | Set target fan speed                                                       |
 | `dvs/speed/state`       | out | `0`..`84`                    | Commanded target speed (retained)                                          |
 | `dvs/speed/actual`      | out | `0`..`84`                    | Sniffed actual (ramping) speed                                             |
@@ -416,7 +417,7 @@ The base topic is `dvs`:
 | `dvs/cutoff_temp/set`   | in  | e.g. `12.0`                  | Winter cold-cutoff temperature (°C)                                        |
 | `dvs/cutoff_temp/state` | out | e.g. `12.0`                  | Current dcold cutoff (retained)                                            |
 | `dvs/target_temp/set`   | in  | e.g. `19.0`                  | Set temperature (°C)                                                       |
-| `dvs/target_temp/state` | out | e.g. `19.0`                  | Current set temperature (retained)                                      |
+| `dvs/target_temp/state` | out | e.g. `19.0`                  | Current set temperature (retained)                                         |
 | `dvs/boost/set`         | in  | `240`                        | Run at full speed for N minutes (`0` cancels)                              |
 | `dvs/boost/state`       | out | `240`                        | Boost minutes remaining (`0` = off, not retained)                          |
 | `dvs/boost/power/set`   | in  | `ON` / `OFF`                 | Boost on (default duration) / off - toggle for HomeKit/Alexa               |

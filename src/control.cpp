@@ -25,6 +25,7 @@ static bool g_fanPower = false;           // true while we intend the fan to run
 static uint8_t g_fanSpeed = 0;            // last commanded target speed (0..84)
 static uint8_t g_lastNonZeroSpeed = 0;    // remembered speed for a bare "power on"
 static uint32_t g_boostUntilMs = 0;       // full-speed boost deadline (0 => none)
+static bool g_standby = false;            // user-off intent: hold fan off + suspend auto
 
 // --- Auto ventilation control state ------------------------------------------
 static DvsProfileSel g_profileSel = DVS_PROFILE_SEL_MANUAL; // manual / winter / summer
@@ -57,6 +58,16 @@ static DvsProfile controlResolveProfile() {
                                                 : DVS_PROFILE_WINTER;
 }
 
+// Stop the fan without recording a user-off intent: write speed target 0 and
+// clear the running state, but leave g_standby alone. Used by auto-control when
+// it idles the fan (cutoff/fail-safe) so it never suspends itself.
+static void fanOff() {
+    g_fanPower = false;
+    g_fanSpeed = 0;
+    const uint8_t zero = 0;
+    dvsBusSend(REG_FAN_SPEED, &zero, 1);
+}
+
 // --- Fan control API (declared in control.h) ---------------------------------
 void dvsControlSetSpeed(uint8_t speed) {
     if (!g_txEnabled) {
@@ -73,6 +84,7 @@ void dvsControlSetSpeed(uint8_t speed) {
     g_fanSpeed = speed;
     g_lastNonZeroSpeed = speed;
     g_fanPower = true;
+    g_standby = false; // commanding a speed clears the user-off intent
     dvsBusSend(REG_FAN_SPEED, &speed, 1);
 }
 
@@ -82,24 +94,37 @@ void dvsControlSetPower(bool on) {
         return;
     }
     if (on) {
-        const uint8_t s = g_lastNonZeroSpeed ? g_lastNonZeroSpeed : DVS_DEFAULT_SPEED;
-        dvsControlSetSpeed(s); // sets state + transmits the speed
+        // Clear the user-off intent and resume: a manual profile returns to its
+        // last/default speed; a seasonal profile hands back to auto-control,
+        // which recomputes the speed on the next tick.
+        g_standby = false;
+        if (g_profileSel == DVS_PROFILE_SEL_MANUAL) {
+            const uint8_t s = g_lastNonZeroSpeed ? g_lastNonZeroSpeed : DVS_DEFAULT_SPEED;
+            dvsControlSetSpeed(s); // sets state + transmits the speed
+        } else {
+            g_lastControlTickMs = 0; // let auto-control act promptly
+        }
     } else {
-        // "Off" matches the wall controller: write fan-speed target 0 (there is
-        // no separate stop register in captures). Send one explicit 0 now for an
-        // immediate response; the poll cycle then keeps re-writing the target
-        // (now 0) at the controller cadence rather than going silent - on/off is
-        // expressed purely through the target value the keepalive re-sends, not
-        // by starting/stopping the transmit.
-        g_fanPower = false;
-        g_fanSpeed = 0;
-        const uint8_t zero = 0;
-        dvsBusSend(REG_FAN_SPEED, &zero, 1);
+        // User off: record the intent so auto-control stays suspended (it won't
+        // re-power the fan), then stop. "Off" writes fan-speed target 0 (there is
+        // no separate stop register); the poll cycle keeps re-writing 0.
+        g_standby = true;
+        fanOff();
     }
 }
 
 bool dvsControlGetPower() { return g_fanPower; }
 uint8_t dvsControlGetSpeed() { return g_fanSpeed; }
+
+void dvsControlSetStandby(bool standby) {
+    g_standby = standby;
+    if (standby) {
+        fanOff(); // dvsBusSend is tx-guarded, so this is safe in listen-only
+    } else {
+        g_lastControlTickMs = 0; // resume auto-control on the next tick
+    }
+}
+bool dvsControlGetStandby() { return g_standby; }
 
 void dvsControlSetTxEnabled(bool enabled) {
     if (g_txEnabled == enabled) {
@@ -219,7 +244,7 @@ bool dvsControlGetInsideTemp(float *celsius) {
 }
 
 void dvsControlAutoTick() {
-    if (g_profileSel == DVS_PROFILE_SEL_MANUAL) {
+    if (g_standby || g_profileSel == DVS_PROFILE_SEL_MANUAL) {
         return;
     }
     const uint32_t nowMs = millis();
@@ -243,7 +268,7 @@ void dvsControlAutoTick() {
         dvsProfileInputsFresh(g_haveAirflowTemp, nowMs - g_airflowTempMs, DVS_TEMP_STALE_MS);
     if (!fresh) {
         if (dvsControlGetPower()) {
-            dvsControlSetPower(false);
+            fanOff();
             netPublishState();
             Serial.println(F("[auto] temp missing/stale -> fan off (fail-safe)"));
         }
@@ -260,7 +285,7 @@ void dvsControlAutoTick() {
     const uint8_t target = dvsProfileSpeed(in, g_profileCfg, g_fanSpeed);
     if (target == 0) {
         if (dvsControlGetPower()) {
-            dvsControlSetPower(false);
+            fanOff();
             netPublishState();
         }
     } else if (target != g_fanSpeed || !dvsControlGetPower()) {
